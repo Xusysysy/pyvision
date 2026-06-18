@@ -15,9 +15,28 @@ import os
 import sys
 import argparse
 import threading
+import traceback
+import logging
 from datetime import datetime
 from abc import ABC, abstractmethod
 from pathlib import Path
+
+def _setup_logger():
+    if getattr(sys, "frozen", False):
+        base = os.path.dirname(sys.executable)
+    else:
+        base = os.path.dirname(os.path.abspath(__file__))
+    log_path = os.path.join(base, "camera_debugger.log")
+    logger = logging.getLogger("camera_debugger")
+    logger.setLevel(logging.DEBUG)
+    fh = logging.FileHandler(log_path, encoding="utf-8")
+    fh.setLevel(logging.DEBUG)
+    fmt = logging.Formatter("[%(asctime)s] %(levelname)s %(name)s: %(message)s", datefmt="%Y-%m-%d %H:%M:%S")
+    fh.setFormatter(fmt)
+    logger.addHandler(fh)
+    return logger
+
+_log = _setup_logger()
 from PIL import Image, ImageTk
 
 try:
@@ -96,13 +115,26 @@ class CNNProcessor(FrameProcessor):
 
     @staticmethod
     def _resolve_model_path(path: str) -> str:
+        basename = os.path.basename(path)
+        _log.info(f"解析模型路径: 输入={path}, basename={basename}")
+
         if os.path.isfile(path):
+            _log.info(f"模型文件已找到 (直接路径): {path}")
             return path
+
         if getattr(sys, "frozen", False):
-            base = sys._MEIPASS
-            bundled = os.path.join(base, os.path.basename(path))
-            if os.path.isfile(bundled):
-                return bundled
+            exe_dir = os.path.dirname(sys.executable)
+            meipass = sys._MEIPASS
+
+            for label, base in [("exe_dir", exe_dir), ("_MEIPASS", meipass),
+                                (os.path.join(exe_dir, "_internal"), os.path.join(exe_dir, "_internal"))]:
+                candidate = os.path.join(base, basename)
+                if os.path.isfile(candidate):
+                    _log.info(f"模型文件已找到 ({label}): {candidate}")
+                    return candidate
+                _log.debug(f"未找到: {candidate}")
+
+        _log.warning(f"模型文件未找到: {path}")
         return path
 
     def __init__(self, model_path: str = "yolov8n.pt", conf_threshold: float = 0.25):
@@ -113,21 +145,23 @@ class CNNProcessor(FrameProcessor):
         self._onnx_session = None
         self._onnx_input_name = None
         self._yolo_names = {}
-        self._load_model(model_path)
+        self._load_model(self.model_path)
 
     def _load_model(self, model_path: str):
+        _log.info(f"开始加载模型: {model_path}")
         if not os.path.isfile(model_path):
-            print(f"[CNN] 模型文件不存在: {model_path}，将在首次推理时提示")
+            _log.error(f"模型文件不存在: {model_path}")
             return
 
         ext = os.path.splitext(model_path)[1].lower()
+        _log.info(f"模型格式: {ext}")
 
         if ext in (".pt", ".yaml"):
             self._load_yolo_ultralytics(model_path)
         elif ext == ".onnx":
             self._load_onnx(model_path)
         else:
-            print(f"[CNN] 不支持的模型格式: {ext}，尝试作为 ONNX 加载")
+            _log.warning(f"不支持的模型格式: {ext}，尝试作为 ONNX 加载")
             self._load_onnx(model_path)
 
     def _load_yolo_ultralytics(self, model_path: str):
@@ -866,8 +900,11 @@ class CameraDebuggerGUI:
         cls = self.PROCESSORS.get(name, NoOpProcessor)
         try:
             if cls == CNNProcessor:
-                path = CNNProcessor.DEFAULT_MODEL
-                if not os.path.isfile(path):
+                resolved = CNNProcessor._resolve_model_path(CNNProcessor.DEFAULT_MODEL)
+                if os.path.isfile(resolved):
+                    path = resolved
+                else:
+                    _log.info("默认模型未找到，弹出文件选择对话框")
                     path = filedialog.askopenfilename(
                         title="选择模型文件",
                         filetypes=[
@@ -877,9 +914,11 @@ class CameraDebuggerGUI:
                         ],
                     )
                 if not path:
+                    _log.warning("用户未选择模型文件")
                     self.processor_var.set("直通 (原始)")
                     self.processor = NoOpProcessor()
                     return
+                _log.info(f"正在创建 CNNProcessor, model_path={path}")
                 self.processor = cls(model_path=path)
             else:
                 self.processor = cls()
