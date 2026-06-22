@@ -14,17 +14,19 @@
 ## 训练自定义模型
 
 ```bash
-# 1. 采集数据
+# 1. 采集数据 (智能眼镜 + 普通眼镜 + 空桌面)
 python collect_data.py --camera 0
+#  P/Space=智能眼镜  R=普通眼镜  N=空桌面
 
-# 2. 用 labelImg 标注正样本中的智能眼镜位置
+# 2. 用 labelImg 框出眼镜并标注类别
 pip install labelImg
-labelImg dataset/images/positive
+labelImg dataset/images/smart     # 标 class 0 (smart_glasses)
+labelImg dataset/images/regular   # 标 class 1 (regular_glasses)
 
 # 3. 整理数据集
 python prepare_dataset.py
 
-# 4. 训练
+# 4. 训练 (二分类: 智能 vs 普通眼镜)
 python train.py --epochs 100 --imgsz 320
 
 # 产出: smart_glasses.onnx

@@ -51,8 +51,6 @@ def train(args):
         save_period=10,
         val=True,
         plots=True,
-        # 单类检测 - 简化 Anchor
-        single_cls=True,
         # 数据增强 - 适配小数据集
         mosaic=1.0,
         mixup=0.2,

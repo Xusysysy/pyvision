@@ -1,13 +1,12 @@
 """
 数据集准备工具 — prepare_dataset.py
 
-将采集的正/负样本图片整理为 YOLO 训练格式:
-  1. 将正样本图片 + 标注文件移动到 dataset/images/train/ 和 dataset/labels/train/
-  2. 按比例分割训练集/验证集
-  3. 可选: 将负样本加入训练集 (无边界框，作为背景训练)
+将采集的图片整理为 YOLO 训练格式:
+  1. 将智能/普通眼镜图片 + 标注文件划分训练集/验证集
+  2. 负样本 (空桌面) 加入训练集 (无边界框，作为背景学习)
 
 用法:
-  python prepare_dataset.py --positive dataset/images/positive --negative dataset/images/negative --val-ratio 0.2
+  python prepare_dataset.py --val-ratio 0.2
 """
 
 import os
@@ -19,14 +18,8 @@ from pathlib import Path
 
 def main():
     parser = argparse.ArgumentParser(description="准备 YOLO 训练数据集")
-    parser.add_argument("--positive", type=str, default="dataset/images/positive",
-                        help="正样本图片目录 (佩戴智能眼镜)")
-    parser.add_argument("--negative", type=str, default="dataset/images/negative",
-                        help="负样本图片目录 (未佩戴)")
     parser.add_argument("--val-ratio", type=float, default=0.2,
                         help="验证集比例")
-    parser.add_argument("--include-negative", action="store_true", default=True,
-                        help="是否包含负样本 (无标签图片)")
     parser.add_argument("--seed", type=int, default=42, help="随机种子")
     args = parser.parse_args()
 
@@ -37,88 +30,80 @@ def main():
     train_lbl = Path("dataset/labels/train")
     val_lbl = Path("dataset/labels/val")
 
-    train_img.mkdir(parents=True, exist_ok=True)
-    val_img.mkdir(parents=True, exist_ok=True)
-    train_lbl.mkdir(parents=True, exist_ok=True)
-    val_lbl.mkdir(parents=True, exist_ok=True)
+    for d in [train_img, val_img, train_lbl, val_lbl]:
+        d.mkdir(parents=True, exist_ok=True)
 
-    pos_dir = Path(args.positive)
-    neg_dir = Path(args.negative)
+    base = Path("dataset/images")
 
-    # 获取所有正样本图片
-    pos_images = sorted(list(pos_dir.glob("*.jpg")) + list(pos_dir.glob("*.png")))
-    if not pos_images:
-        print(f"警告: 未在 {pos_dir} 中找到正样本图片")
+    def find_pairs(image_dir):
+        img_dir = base / image_dir
+        images = sorted(list(img_dir.glob("*.jpg")) + list(img_dir.glob("*.png")))
+        pairs = []
+        unlabeled = []
+        for img_path in images:
+            lbl_path = base.parent / "labels" / image_dir / img_path.name.replace(img_path.suffix, ".txt")
+            alt_lbl = img_dir.parent.parent / "labels" / img_path.name.replace(img_path.suffix, ".txt")
+            if lbl_path.exists():
+                pairs.append((img_path, lbl_path))
+            elif alt_lbl.exists():
+                pairs.append((img_path, alt_lbl))
+            elif len(base.parent / "labels" / image_dir) > 0:
+                # 目录存在但标签不匹配
+                pass
+            else:
+                unlabeled.append(img_path)
+        return images, pairs, unlabeled
 
-    # 匹配标注文件 (labelImg 生成的 .txt 与图片同名)
-    paired = []
-    unlabeled = []
-    for img_path in pos_images:
-        label_path = Path(str(img_path).replace("images", "labels")).with_suffix(".txt")
-        # 也尝试在同目录查找
-        alt_label = pos_dir.parent.parent / "labels" / img_path.name.replace(img_path.suffix, ".txt")
-        if label_path.exists():
-            paired.append((img_path, label_path))
-        elif alt_label.exists():
-            paired.append((img_path, alt_label))
-        else:
-            unlabeled.append(img_path)
+    # 智能眼镜
+    smart_images, smart_pairs, smart_unlabeled = find_pairs("smart")
+    print(f"智能眼镜: {len(smart_images)} 张, 已标注 {len(smart_pairs)} 张")
+    if smart_unlabeled:
+        print(f"  未标注 {len(smart_unlabeled)} 张 — 请用 labelImg 标注")
 
-    print(f"正样本图片: {len(pos_images)} 张")
-    print(f"  已标注:   {len(paired)} 张")
-    print(f"  未标注:   {len(unlabeled)} 张")
+    # 普通眼镜
+    regular_images, regular_pairs, regular_unlabeled = find_pairs("regular")
+    print(f"普通眼镜: {len(regular_images)} 张, 已标注 {len(regular_pairs)} 张")
+    if regular_unlabeled:
+        print(f"  未标注 {len(regular_unlabeled)} 张 — 请用 labelImg 标注")
 
-    # 分割
-    random.shuffle(paired)
-    split = int(len(paired) * (1 - args.val_ratio))
-    train_pairs = paired[:split]
-    val_pairs = paired[split:]
+    # 合并已标注对
+    all_pairs = smart_pairs + regular_pairs
+    random.shuffle(all_pairs)
+    split = int(len(all_pairs) * (1 - args.val_ratio))
+    train_pairs = all_pairs[:split]
+    val_pairs = all_pairs[split:]
 
-    # 复制已标注图片
     for img_path, lbl_path in train_pairs:
-        dst_img = train_img / img_path.name
-        dst_lbl = train_lbl / lbl_path.name
-        shutil.copy2(img_path, dst_img)
-        shutil.copy2(lbl_path, dst_lbl)
+        shutil.copy2(img_path, train_img / img_path.name)
+        shutil.copy2(lbl_path, train_lbl / lbl_path.name)
 
     for img_path, lbl_path in val_pairs:
-        dst_img = val_img / img_path.name
-        dst_lbl = val_lbl / lbl_path.name
-        shutil.copy2(img_path, dst_img)
-        shutil.copy2(lbl_path, dst_lbl)
+        shutil.copy2(img_path, val_img / img_path.name)
+        shutil.copy2(lbl_path, val_lbl / lbl_path.name)
 
-    print(f"训练集: {len(train_pairs)} 张 (已标注)")
-    print(f"验证集: {len(val_pairs)} 张 (已标注)")
+    # 统计每类数量
+    train_smart = sum(1 for p in train_pairs if "smart" in str(p[0]))
+    train_regular = sum(1 for p in train_pairs if "regular" in str(p[0]))
+    val_smart = sum(1 for p in val_pairs if "smart" in str(p[0]))
+    val_regular = sum(1 for p in val_pairs if "regular" in str(p[0]))
 
-    # 负样本 (无标签)
-    if args.include_negative:
-        neg_images = sorted(list(neg_dir.glob("*.jpg")) + list(neg_dir.glob("*.png")))
-        if neg_images:
-            random.shuffle(neg_images)
-            neg_split = int(len(neg_images) * (1 - args.val_ratio))
-            neg_train = neg_images[:neg_split]
-            neg_val = neg_images[neg_split:]
+    print(f"\n训练集: {len(train_pairs)} 张 (智能: {train_smart}, 普通: {train_regular})")
+    print(f"验证集: {len(val_pairs)} 张 (智能: {val_smart}, 普通: {val_regular})")
 
-            for img_path in neg_train:
-                dst_img = train_img / img_path.name
-                shutil.copy2(img_path, dst_img)
+    # 负样本 (空桌面)
+    neg_dir = base / "negative"
+    neg_images = sorted(list(neg_dir.glob("*.jpg")) + list(neg_dir.glob("*.png")))
+    if neg_images:
+        random.shuffle(neg_images)
+        neg_split = int(len(neg_images) * (1 - args.val_ratio))
+        for img_path in neg_images[:neg_split]:
+            shutil.copy2(img_path, train_img / img_path.name)
+        for img_path in neg_images[neg_split:]:
+            shutil.copy2(img_path, val_img / img_path.name)
+        print(f"负样本: 训练 {neg_split} 张, 验证 {len(neg_images) - neg_split} 张")
 
-            for img_path in neg_val:
-                dst_img = val_img / img_path.name
-                shutil.copy2(img_path, dst_img)
-
-            print(f"负样本: 训练集 {len(neg_train)} 张, 验证集 {len(neg_val)} 张")
-        else:
-            print(f"警告: 未在 {neg_dir} 中找到负样本图片")
-
-    # 未标注的正样本: 放入训练集备用手动标注
-    if unlabeled:
-        print(f"\n未标注的正样本 ({len(unlabeled)} 张) 跳过。请用 labelImg 标注后重新运行。")
-
-    print("\n数据集准备完成。标注提示:")
-    print(f"  pip install labelImg")
-    print(f"  labelImg {args.positive}")
-    print(f"  (选择 YOLO 格式保存, 类别名 smart_glasses)")
+    print("\n准备完成。下一步:")
+    print("  python train.py --epochs 100 --imgsz 320")
 
 
 if __name__ == "__main__":

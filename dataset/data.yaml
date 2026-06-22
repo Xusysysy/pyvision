@@ -1,11 +1,14 @@
 # 智能眼镜检测数据集配置
-# 用法: 将采集的图片放入 dataset/images/，用 labelImg 标注后
-#       标签文件 (.txt) 放入 dataset/labels/
+# 将智能眼镜和普通眼镜平方桌面，俯拍采集图片
+# 用 labelImg 框出眼镜并标注类别:
+#   0 = smart_glasses  (智能眼镜: 有摄像头/电池/按钮)
+#   1 = regular_glasses (普通眼镜: 仅镜框+镜片) 
 
-path: .  # 数据集根目录 (相对于此 yaml 文件)
+path: .
 train: images/train
 val: images/val
 
-nc: 1
+nc: 2
 names:
   0: smart_glasses
+  1: regular_glasses
