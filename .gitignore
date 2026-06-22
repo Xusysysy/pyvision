@@ -6,3 +6,7 @@ build/
 *.exe
 *.spec.user
 .vscode/
+snapshots/
+*.pt
+*.onnx
+*.log
