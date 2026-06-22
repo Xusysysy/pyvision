@@ -20,7 +20,6 @@ datas += collect_data_files('ultralytics', include_py_files=False)
 # 不需要 certifi（代码里已禁用 SSL 验证）
 
 excludes = [
-    'torch.distributed',
     'torch.testing',
     'torch.onnx._internal',
     'torch.onnx',
