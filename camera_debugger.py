@@ -183,13 +183,15 @@ class CNNProcessor(FrameProcessor):
     def _load_yolo_ultralytics(self, model_path: str):
         try:
             from ultralytics import YOLO
+        except ImportError:
+            _log.error("未安装 ultralytics，无法加载 .pt 模型。pip install ultralytics")
+            _log.error(traceback.format_exc())
+            return
+        try:
             self.model = YOLO(model_path)
             self._model_type = "yolo_ultralytics"
             self._yolo_names = self.model.names if hasattr(self.model, "names") else {}
             _log.info(f"已加载 YOLO 模型: {model_path}")
-        except ImportError:
-            _log.error("未安装 ultralytics，无法加载 .pt 模型。pip install ultralytics")
-            _log.error(traceback.format_exc())
         except Exception as e:
             _log.error(f"YOLO 模型加载失败: {e}")
             _log.error(traceback.format_exc())
@@ -197,14 +199,16 @@ class CNNProcessor(FrameProcessor):
     def _load_onnx(self, model_path: str):
         try:
             import onnxruntime as ort
+        except ImportError:
+            _log.error("未安装 onnxruntime，无法加载模型。pip install onnxruntime")
+            _log.error(traceback.format_exc())
+            return
+        try:
             self._onnx_session = ort.InferenceSession(model_path)
             self._onnx_input_name = self._onnx_session.get_inputs()[0].name
             self.model = self._onnx_session
             self._model_type = "onnx"
             _log.info(f"已加载 ONNX 模型: {model_path}")
-        except ImportError:
-            _log.error("未安装 onnxruntime，无法加载模型。pip install onnxruntime")
-            _log.error(traceback.format_exc())
         except Exception as e:
             _log.error(f"ONNX 模型加载失败: {e}")
             _log.error(traceback.format_exc())
