@@ -189,8 +189,10 @@ class CNNProcessor(FrameProcessor):
             _log.info(f"已加载 YOLO 模型: {model_path}")
         except ImportError:
             _log.error("未安装 ultralytics，无法加载 .pt 模型。pip install ultralytics")
+            _log.error(traceback.format_exc())
         except Exception as e:
             _log.error(f"YOLO 模型加载失败: {e}")
+            _log.error(traceback.format_exc())
 
     def _load_onnx(self, model_path: str):
         try:
@@ -202,8 +204,10 @@ class CNNProcessor(FrameProcessor):
             _log.info(f"已加载 ONNX 模型: {model_path}")
         except ImportError:
             _log.error("未安装 onnxruntime，无法加载模型。pip install onnxruntime")
+            _log.error(traceback.format_exc())
         except Exception as e:
             _log.error(f"ONNX 模型加载失败: {e}")
+            _log.error(traceback.format_exc())
 
     # ──────── 图像转换接口 ────────
 
