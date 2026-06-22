@@ -371,10 +371,12 @@ class CameraManager:
         self._start_grab_thread()
 
     def _open(self):
-        self.cap = cv2.VideoCapture(self.camera_id)
+        if sys.platform == "win32":
+            self.cap = cv2.VideoCapture(self.camera_id, cv2.CAP_DSHOW)
+        else:
+            self.cap = cv2.VideoCapture(self.camera_id)
         if not self.cap.isOpened():
             raise RuntimeError(f"无法打开摄像头 {self.camera_id}")
-        # 尝试设置请求的分辨率
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.requested_width)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.requested_height)
         self.actual_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
@@ -382,14 +384,17 @@ class CameraManager:
         print(f"[Camera] 已打开摄像头 {self.camera_id}: {self.actual_width}x{self.actual_height}")
 
     def _start_grab_thread(self):
-        if self._grab_thread and self._grab_thread.is_alive():
-            return
+        self._running = True
         self._grab_thread = threading.Thread(target=self._grab_loop, daemon=True)
         self._grab_thread.start()
 
+    def _stop_grab_thread(self):
+        self._running = False
+        if self._grab_thread and self._grab_thread.is_alive():
+            self._grab_thread.join(timeout=2.0)
+
     def _grab_loop(self):
-        while getattr(self, '_running', False):
-            # 把对 cap 的访问放在 lock 里，保证与切换/释放互斥
+        while self._running:
             with self.lock:
                 cap = self.cap
                 if cap and cap.isOpened():
@@ -403,7 +408,6 @@ class CameraManager:
             with self._frame_lock:
                 self._last_ret = bool(ret)
                 if ret and frame is not None:
-                    # 仅保存副本以避免被外部修改
                     self._last_frame = frame.copy()
                 else:
                     self._last_frame = None
@@ -419,45 +423,51 @@ class CameraManager:
 
     def switch(self, new_id: int):
         """切换摄像头（线程安全）"""
+        self._stop_grab_thread()
+
         with self.lock:
-            if self.cap and self.cap.isOpened():
-                self.cap.release()
+            if self.cap:
+                try:
+                    self.cap.release()
+                except Exception:
+                    pass
                 self.cap = None
             self.camera_id = new_id
 
-        # 重新打开（不在 lock 中，以免阻塞采集线程长时间等待）
         self._open()
+        self._start_grab_thread()
 
     def set_resolution(self, width: int, height: int) -> bool:
-        """设置分辨率。优先尝试直接设置属性，若后端不支持则重启摄像头。"""
-        # 尝试快速路径：直接设置属性
+        """设置分辨率。优先尝试直接设置属性，若不支持则通过重启摄像头实现。"""
         with self.lock:
             if self.cap and self.cap.isOpened():
                 try:
                     self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
                     self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
-                    actual_w = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-                    actual_h = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-                    if actual_w == width and actual_h == height:
-                        self.actual_width = actual_w
-                        self.actual_height = actual_h
-                        print(f"[Camera] 分辨率已改为: {self.actual_width}x{self.actual_height}")
-                        return True
+                    self.actual_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+                    self.actual_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                    self.requested_width = width
+                    self.requested_height = height
+                    print(f"[Camera] 分辨率已改为: {self.actual_width}x{self.actual_height}")
+                    return True
                 except Exception:
                     pass
 
-                # 如果直接设置不生效，释放摄像头并在外部重新打开
+        self._stop_grab_thread()
+
+        with self.lock:
+            if self.cap:
                 try:
                     self.cap.release()
                 except Exception:
                     pass
                 self.cap = None
 
-        # 更新请求分辨率并重试打开（_open 会使用 self.requested_*）
         self.requested_width = width
         self.requested_height = height
         try:
             self._open()
+            self._start_grab_thread()
             return True
         except Exception as e:
             print(f"[Camera] 无法设置分辨率: {e}")
