@@ -70,11 +70,6 @@ def main():
 
         display = frame.copy()
 
-        cv2.putText(display, f"POS: {pos_count}  NEG: {neg_count}", (10, 25),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-        cv2.putText(display, "P=Positive  N=Negative  Q=Quit", (10, 55),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
-
         overlay = display.copy()
         cv2.rectangle(overlay, (0, 0), (display.shape[1], 65), (40, 40, 40), -1)
         cv2.addWeighted(overlay, 0.5, display, 0.5, 0, display)
