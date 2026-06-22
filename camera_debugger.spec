@@ -1,6 +1,6 @@
 # -*- mode: python ; coding: utf-8 -*-
 
-datas = [('yolov8n.pt', '.')]
+datas = [('smart_glasses.onnx', '.'), ('yolov8n.pt', '.')]
 binaries = []
 hiddenimports = []
 

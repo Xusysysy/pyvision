@@ -111,7 +111,7 @@ class CNNProcessor(FrameProcessor):
       - edges  : Canny 边缘检测三通道图像
     """
 
-    DEFAULT_MODEL = "yolov8n.pt"
+    DEFAULT_MODEL = "smart_glasses.onnx"
 
     @staticmethod
     def _resolve_model_path(path: str) -> str:
