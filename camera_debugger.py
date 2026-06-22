@@ -112,6 +112,7 @@ class CNNProcessor(FrameProcessor):
     """
 
     DEFAULT_MODEL = "smart_glasses.onnx"
+    _last_selected_path: str | None = None
 
     @staticmethod
     def _resolve_model_path(path: str) -> str:
@@ -137,7 +138,7 @@ class CNNProcessor(FrameProcessor):
         _log.warning(f"模型文件未找到: {path}")
         return path
 
-    def __init__(self, model_path: str = "yolov8n.pt", conf_threshold: float = 0.25):
+    def __init__(self, model_path: str = "yolov8n.pt", conf_threshold: float = 0.25, async_load: bool = False):
         self.model_path = self._resolve_model_path(model_path)
         self.conf_threshold = conf_threshold
         self.model = None
@@ -145,7 +146,13 @@ class CNNProcessor(FrameProcessor):
         self._onnx_session = None
         self._onnx_input_name = None
         self._yolo_names = {}
-        self._load_model(self.model_path)
+        self._loading = False
+        self._load_error = None
+        if async_load:
+            self._loading = True
+            threading.Thread(target=self._load_model_thread, args=(self.model_path,), daemon=True).start()
+        else:
+            self._load_model(self.model_path)
 
     def _load_model(self, model_path: str):
         _log.info(f"开始加载模型: {model_path}")
@@ -164,17 +171,26 @@ class CNNProcessor(FrameProcessor):
             _log.warning(f"不支持的模型格式: {ext}，尝试作为 ONNX 加载")
             self._load_onnx(model_path)
 
+    def _load_model_thread(self, model_path: str):
+        try:
+            self._load_model(model_path)
+        except Exception as e:
+            _log.error(f"后台模型加载失败: {e}")
+            self._load_error = str(e)
+        finally:
+            self._loading = False
+
     def _load_yolo_ultralytics(self, model_path: str):
         try:
             from ultralytics import YOLO
             self.model = YOLO(model_path)
             self._model_type = "yolo_ultralytics"
             self._yolo_names = self.model.names if hasattr(self.model, "names") else {}
-            print(f"[CNN] 已加载 YOLO 模型: {model_path}")
+            _log.info(f"已加载 YOLO 模型: {model_path}")
         except ImportError:
-            print("[CNN] 未安装 ultralytics，无法加载 .pt 模型。pip install ultralytics")
+            _log.error("未安装 ultralytics，无法加载 .pt 模型。pip install ultralytics")
         except Exception as e:
-            print(f"[CNN] YOLO 模型加载失败: {e}")
+            _log.error(f"YOLO 模型加载失败: {e}")
 
     def _load_onnx(self, model_path: str):
         try:
@@ -183,11 +199,11 @@ class CNNProcessor(FrameProcessor):
             self._onnx_input_name = self._onnx_session.get_inputs()[0].name
             self.model = self._onnx_session
             self._model_type = "onnx"
-            print(f"[CNN] 已加载 ONNX 模型: {model_path}")
+            _log.info(f"已加载 ONNX 模型: {model_path}")
         except ImportError:
-            print("[CNN] 未安装 onnxruntime，无法加载模型。pip install onnxruntime")
+            _log.error("未安装 onnxruntime，无法加载模型。pip install onnxruntime")
         except Exception as e:
-            print(f"[CNN] ONNX 模型加载失败: {e}")
+            _log.error(f"ONNX 模型加载失败: {e}")
 
     # ──────── 图像转换接口 ────────
 
@@ -303,6 +319,16 @@ class CNNProcessor(FrameProcessor):
     def process(self, frame: np.ndarray) -> np.ndarray:
         gray = self._to_grayscale(frame)
         edges = self._to_edges(frame)
+
+        if self._loading:
+            cv2.putText(frame, "CNN: loading model...", (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 200, 255), 2)
+            return frame
+
+        if self._load_error:
+            cv2.putText(frame, f"CNN load error: {self._load_error}", (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2)
+            return frame
 
         if self.model is None:
             cv2.putText(frame, "CNN: model not loaded", (10, 30),
@@ -910,10 +936,17 @@ class CameraDebuggerGUI:
         cls = self.PROCESSORS.get(name, NoOpProcessor)
         try:
             if cls == CNNProcessor:
-                resolved = CNNProcessor._resolve_model_path(CNNProcessor.DEFAULT_MODEL)
-                if os.path.isfile(resolved):
-                    path = resolved
+                path = None
+
+                if CNNProcessor._last_selected_path and os.path.isfile(CNNProcessor._last_selected_path):
+                    _log.info(f"使用上次选择的模型: {CNNProcessor._last_selected_path}")
+                    path = CNNProcessor._last_selected_path
                 else:
+                    resolved = CNNProcessor._resolve_model_path(CNNProcessor.DEFAULT_MODEL)
+                    if os.path.isfile(resolved):
+                        path = resolved
+
+                if not path:
                     _log.info("默认模型未找到，弹出文件选择对话框")
                     path = filedialog.askopenfilename(
                         title="选择模型文件",
@@ -928,11 +961,14 @@ class CameraDebuggerGUI:
                     self.processor_var.set("直通 (原始)")
                     self.processor = NoOpProcessor()
                     return
+
+                CNNProcessor._last_selected_path = path
                 _log.info(f"正在创建 CNNProcessor, model_path={path}")
-                self.processor = cls(model_path=path)
+                self.processor = cls(model_path=path, async_load=True)
+                self.status_var.set(f"处理管线: {name} (加载中...)")
             else:
                 self.processor = cls()
-            self.status_var.set(f"处理管线: {name}")
+                self.status_var.set(f"处理管线: {name}")
         except Exception as ex:
             messagebox.showerror("错误", f"加载处理器失败:\n{ex}")
             self.processor = NoOpProcessor()
@@ -963,6 +999,14 @@ class CameraDebuggerGUI:
             processed = frame
             cv2.putText(processed, f"Error: {ex}", (10, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+
+        if isinstance(self.processor, CNNProcessor):
+            if self.processor._loading:
+                pass
+            elif not self.processor._loading and self.processor.model is not None and self.status_var.get().endswith("(加载中...)"):
+                self.status_var.set(f"处理管线: CNN 模型 (已加载)")
+            elif not self.processor._loading and self.processor._load_error:
+                self.status_var.set(f"处理管线: CNN 模型 (加载失败)")
 
         self._processed_frame = processed.copy()
 
