@@ -76,7 +76,15 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 - If the user explicitly says to skip or do something else first, follow that instead.
 - Never force push. If push fails (e.g., no remote, no permission), report the error and continue.
 
-## 6. Prefer Edit Over Write + Sync STRUCTURE.md
+## 6. Build After Every Modification
+
+**After every code modification, build the exe with PyInstaller and report the output location:**
+
+- Run: `pyinstaller camera_debugger.spec --noconfirm` (from project root)
+- If build succeeds, report the output directory (typically `dist/camera_debugger/`) and the exe path
+- If build fails, report the error and stop — do not skip the build
+
+## 7. Prefer Edit Over Write + Sync STRUCTURE.md
 
 **Prefer modifying files with the Edit tool rather than rewriting entire files. Only use Write when creating new files or when the scope of changes exceeds 50% of the file.**
 
