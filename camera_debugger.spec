@@ -1,6 +1,13 @@
 # -*- mode: python ; coding: utf-8 -*-
+import os
 
-datas = [('smart_glasses.onnx', '.'), ('yolov8n.pt', '.')]
+datas = []
+for model_file in ['smart_glasses.onnx', 'yolov8n.pt']:
+    if os.path.isfile(model_file):
+        datas.append((model_file, '.'))
+    else:
+        print(f"[spec] 模型文件不存在，跳过: {model_file}")
+
 binaries = []
 hiddenimports = []
 
