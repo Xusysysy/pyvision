@@ -21,7 +21,6 @@ datas += collect_data_files('ultralytics', include_py_files=False)
 
 excludes = [
     'scipy',
-    'matplotlib',
     'pandas',
     'seaborn',
     'IPython',
@@ -35,7 +34,6 @@ excludes = [
     'mlflow',
     'cv2.cuda',
     'ultralytics.solutions',
-    'ultralytics.hub',
     'ultralytics.data.explorer',
 ]
 
