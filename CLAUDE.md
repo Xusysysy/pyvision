@@ -32,7 +32,14 @@ Before implementing:
 
 Ask yourself: "Would a senior engineer say this is overcomplicated?" If yes, simplify.
 
-## 3. Surgical Changes
+## 3. Prefer Libraries Over Hand-Rolled Code
+
+**能调库的直接调库，最小化精简代码；实在没有库可以使用，再考虑算法实现。**
+
+- 优先使用成熟库（如 OpenCV / numpy / ultralytics / Pillow）完成功能，不要重复实现库中已有的算法或数据结构。
+- 只有确认没有现成库可用时，才允许手写算法实现，并保持精简。
+
+## 4. Surgical Changes
 
 **Touch only what you must. Clean up only your own mess.**
 
@@ -48,7 +55,7 @@ When your changes create orphans:
 
 The test: Every changed line should trace directly to the user's request.
 
-## 4. Goal-Driven Execution
+## 5. Goal-Driven Execution
 
 **Define success criteria. Loop until verified.**
 
@@ -67,7 +74,7 @@ For multi-step tasks, state a brief plan:
 Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
 
 
-## 5. Auto Git Push After Build
+## 6. Auto Git Push After Build
 
 **When the user continues conversation after a build (with no explicit instruction to skip), first commit and push to preserve changes:**
 
@@ -76,7 +83,7 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 - If the user explicitly says to skip or do something else first, follow that instead.
 - Never force push. If push fails (e.g., no remote, no permission), report the error and continue.
 
-## 6. Build After Every Modification
+## 7. Build After Every Modification
 
 **After every code modification, build the exe with PyInstaller and report the output location:**
 
@@ -84,7 +91,7 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 - If build succeeds, report the output directory (typically `dist/camera_debugger/`) and the exe path
 - If build fails, report the error and stop — do not skip the build
 
-## 7. Prefer Edit Over Write + Sync STRUCTURE.md
+## 8. Prefer Edit Over Write + Sync STRUCTURE.md
 
 **Prefer modifying files with the Edit tool rather than rewriting entire files. Only use Write when creating new files or when the scope of changes exceeds 50% of the file.**
 
