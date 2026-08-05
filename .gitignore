@@ -8,6 +8,8 @@ build/
 .vscode/
 snapshots/
 settings.json
+runs/
+*.cache
 *.pt
 *.onnx
 *.log
