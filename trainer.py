@@ -63,8 +63,15 @@ def _app_dir() -> str:
     return os.path.dirname(os.path.abspath(__file__))
 
 
+def _data_dir() -> str:
+    """数据根目录。打包后放在用户主目录，避免被 PyInstaller 重建 exe 目录时误删。"""
+    if getattr(sys, "frozen", False):
+        return os.path.join(os.path.expanduser("~"), "pyvision_dataset")
+    return os.path.join(os.path.dirname(os.path.abspath(__file__)), "dataset")
+
+
 APP_DIR = _app_dir()
-DATA_ROOT = os.path.join(APP_DIR, "dataset")
+DATA_ROOT = _data_dir()
 
 CLASSES = ["smart_glasses", "regular_glasses", "negative"]
 CLASS_LABELS = ["智能眼镜", "普通眼镜", "空桌面"]
@@ -672,7 +679,7 @@ class TrainerGUI:
                 "workers": max(0, int(self.param_vars["workers_var"].get())),
                 "patience": max(0, int(self.param_vars["patience_var"].get())),
                 "run_name": "smart_glasses",
-                "out_dir": APP_DIR,
+                "out_dir": DATA_ROOT,
                 "out_name": self.out_name_var.get().strip() or "smart_glasses_cls.pt",
             }
         except ValueError as e:

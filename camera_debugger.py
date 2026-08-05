@@ -391,6 +391,13 @@ def _app_dir() -> str:
     return os.path.dirname(os.path.abspath(__file__))
 
 
+def _settings_path() -> str:
+    """设置文件路径。打包后放在用户主目录，避免被构建过程误删。"""
+    if getattr(sys, "frozen", False):
+        return os.path.join(os.path.expanduser("~"), "camera_debugger_settings.json")
+    return os.path.join(_app_dir(), "settings.json")
+
+
 class Settings:
     """轻量 JSON 设置持久化，变更即保存"""
 
@@ -660,7 +667,7 @@ class CameraDebuggerGUI:
         self.video_writer = None
 
         # 设置持久化
-        self.settings = Settings(os.path.join(_app_dir(), "settings.json"))
+        self.settings = Settings(_settings_path())
 
         # 默认输出目录
         self.output_dir = tk.StringVar(value=os.path.join(os.getcwd(), "snapshots"))
@@ -1442,7 +1449,7 @@ def main():
     args = parser.parse_args()
 
     # 优先恢复上次保存的摄像头与分辨率
-    settings = Settings(os.path.join(_app_dir(), "settings.json"))
+    settings = Settings(_settings_path())
     cam_id = settings.get("camera_id", args.camera)
     width = settings.get("width", args.width)
     height = settings.get("height", args.height)
