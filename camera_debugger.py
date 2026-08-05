@@ -13,6 +13,7 @@ import numpy as np
 import time
 import os
 import sys
+import json
 import argparse
 import threading
 import traceback
@@ -356,6 +357,45 @@ class CNNProcessor(FrameProcessor):
 # 2. 摄像头枚举
 # ═══════════════════════════════════════════════
 
+def _app_dir() -> str:
+    """返回应用目录：打包后为 exe 所在目录，否则为脚本所在目录"""
+    if getattr(sys, "frozen", False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+class Settings:
+    """轻量 JSON 设置持久化，变更即保存"""
+
+    def __init__(self, path: str):
+        self.path = path
+        self.data: dict = {}
+        self._load()
+
+    def _load(self):
+        if os.path.isfile(self.path):
+            try:
+                with open(self.path, "r", encoding="utf-8") as f:
+                    self.data = json.load(f)
+            except Exception as e:
+                _log.error(f"加载设置失败: {e}")
+                self.data = {}
+
+    def get(self, key, default=None):
+        return self.data.get(key, default)
+
+    def update(self, **kwargs):
+        self.data.update(kwargs)
+        self.save()
+
+    def save(self):
+        try:
+            with open(self.path, "w", encoding="utf-8") as f:
+                json.dump(self.data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            _log.error(f"保存设置失败: {e}")
+
+
 def enumerate_cameras(max_id: int = 10) -> list[dict]:
     """
     扫描系统可用摄像头，返回列表:
@@ -562,6 +602,9 @@ class CameraDebuggerGUI:
         self.recording = False
         self.video_writer = None
 
+        # 设置持久化
+        self.settings = Settings(os.path.join(_app_dir(), "settings.json"))
+
         # 默认输出目录
         self.output_dir = tk.StringVar(value=os.path.join(os.getcwd(), "snapshots"))
         os.makedirs(self.output_dir.get(), exist_ok=True)
@@ -594,10 +637,18 @@ class CameraDebuggerGUI:
         self._current_frame = None
         self._processed_frame = None
 
+        # 显示缓存（用于避免重复缩放/重绘）
+        self._canvas_item = None
+        self._disp_w = 0
+        self._disp_h = 0
+        self._canvas_w = 0
+        self._canvas_h = 0
+
         # 摄像头列表
         self._camera_list: list[dict] = []
 
         self._setup_ui()
+        self._apply_saved_settings()
         self._scan_cameras()
         self._update_frame()
 
@@ -864,6 +915,60 @@ class CameraDebuggerGUI:
         self.root.bind("<Q>", lambda e: self._on_close())
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
+    # ───────────── 设置持久化 ─────────────
+
+    def _apply_saved_settings(self):
+        """启动时恢复上次保存的设置到 UI 变量"""
+        s = self.settings
+
+        if s.get("output_dir"):
+            self.output_dir.set(s["output_dir"])
+            os.makedirs(self.output_dir.get(), exist_ok=True)
+        if s.get("photo_prefix"):
+            self.photo_prefix.set(s["photo_prefix"])
+
+        self.show_fps = bool(s.get("show_fps", True))
+        self.fps_var.set(self.show_fps)
+        self.show_crosshair = bool(s.get("show_crosshair", False))
+        self.crosshair_var.set(self.show_crosshair)
+        self.mirror = bool(s.get("mirror", False))
+        self.mirror_var.set(self.mirror)
+
+        self.offset_x = int(s.get("offset_x", 0))
+        self.offset_y = int(s.get("offset_y", 0))
+        self.offset_x_var.set(self.offset_x)
+        self.offset_y_var.set(self.offset_y)
+
+        proc = s.get("processor")
+        model_path = s.get("model_path")
+        if proc in self.PROCESSORS:
+            self.processor_var.set(proc)
+            if proc == "CNN 模型" and model_path:
+                CNNProcessor._last_selected_path = model_path
+                self.processor = CNNProcessor(model_path=model_path, async_load=True)
+            else:
+                self.processor = self.PROCESSORS[proc]()
+
+        # 输出目录/前缀变更即保存（新增监听，避免恢复时反复写文件）
+        self.output_dir.trace_add("write", lambda *_: self._save_settings())
+        self.photo_prefix.trace_add("write", lambda *_: self._save_settings())
+
+    def _save_settings(self):
+        self.settings.update(
+            camera_id=self.camera.camera_id,
+            width=self.camera.actual_width,
+            height=self.camera.actual_height,
+            output_dir=self.output_dir.get(),
+            photo_prefix=self.photo_prefix.get(),
+            show_fps=self.show_fps,
+            show_crosshair=self.show_crosshair,
+            mirror=self.mirror,
+            offset_x=self.offset_x,
+            offset_y=self.offset_y,
+            processor=self.processor_var.get(),
+            model_path=CNNProcessor._last_selected_path or "",
+        )
+
     # ───────────── 摄像头扫描与切换 ─────────────
 
     def _scan_cameras(self):
@@ -915,6 +1020,7 @@ class CameraDebuggerGUI:
             self.camera.switch(new_id)
             self.status_var.set(f"已切换到 {self._camera_list[sel]['name']}")
             self._update_cam_info()
+            self._save_settings()
         except RuntimeError as e:
             messagebox.showerror("切换失败", str(e))
             self.status_var.set("切换失败")
@@ -963,6 +1069,7 @@ class CameraDebuggerGUI:
         if self.camera.set_resolution(width, height):
             self.status_var.set(f"分辨率已改为 {width}x{height}")
             self._update_cam_info()
+            self._save_settings()
         else:
             messagebox.showerror("失败", "无法设置分辨率")
             self.status_var.set("设置分辨率失败")
@@ -1007,6 +1114,7 @@ class CameraDebuggerGUI:
             else:
                 self.processor = cls()
                 self.status_var.set(f"处理管线: {name}")
+            self._save_settings()
         except Exception as ex:
             messagebox.showerror("错误", f"加载处理器失败:\n{ex}")
             self.processor = NoOpProcessor()
@@ -1022,11 +1130,8 @@ class CameraDebuggerGUI:
             self.root.after(30, self._update_frame)
             return
 
-        # 保护当前帧和处理帧的访问，避免在分辨率切换或释放过程中出现 None 或竞争
-        try:
-            self._current_frame = frame.copy()
-        except Exception:
-            self._current_frame = None
+        # read() 已返回独立副本，直接引用避免重复拷贝
+        self._current_frame = frame
 
         if self.mirror:
             frame = cv2.flip(frame, 1)
@@ -1050,7 +1155,7 @@ class CameraDebuggerGUI:
         if self.offset_x or self.offset_y:
             processed = self._apply_offset(processed)
 
-        self._processed_frame = processed.copy()
+        self._processed_frame = processed
 
         display = processed.copy()
 
@@ -1090,30 +1195,40 @@ class CameraDebuggerGUI:
             self._frame_count = 0
             self._fps_time = now
 
-        self.root.after(1, self._update_frame)
+        self.root.after(16, self._update_frame)
 
     def _display_frame(self, frame: np.ndarray):
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        img = Image.fromarray(rgb)
-
         cw = self.canvas.winfo_width()
         ch = self.canvas.winfo_height()
         if cw < 2 or ch < 2:
             return
 
-        img_w, img_h = img.size
-        scale = min(cw / img_w, ch / img_h)
-        new_w = int(img_w * scale)
-        new_h = int(img_h * scale)
-        img = img.resize((new_w, new_h), Image.LANCZOS)
+        h, w = frame.shape[:2]
+        # 仅当画布尺寸或帧尺寸变化时才重算显示尺寸
+        if (self._disp_w != w or self._disp_h != h
+                or self._canvas_w != cw or self._canvas_h != ch):
+            scale = min(cw / w, ch / h)
+            self._disp_w = max(1, int(w * scale))
+            self._disp_h = max(1, int(h * scale))
+            self._canvas_w = cw
+            self._canvas_h = ch
+            self._scale = scale
+            self._offset_x = (cw - self._disp_w) // 2
+            self._offset_y = (ch - self._disp_h) // 2
+            if self._canvas_item is not None:
+                self.canvas.coords(self._canvas_item, cw // 2, ch // 2)
+
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        img = Image.fromarray(rgb)
+        if (self._disp_w, self._disp_h) != (w, h):
+            img = img.resize((self._disp_w, self._disp_h), Image.BILINEAR)
 
         self._tk_image = ImageTk.PhotoImage(img)
-        self.canvas.delete("all")
-        self.canvas.create_image(cw // 2, ch // 2, anchor=tk.CENTER, image=self._tk_image)
-
-        self._scale = scale
-        self._offset_x = (cw - new_w) // 2
-        self._offset_y = (ch - new_h) // 2
+        if self._canvas_item is None:
+            self._canvas_item = self.canvas.create_image(
+                cw // 2, ch // 2, anchor=tk.CENTER, image=self._tk_image)
+        else:
+            self.canvas.itemconfigure(self._canvas_item, image=self._tk_image)
 
     # ───────────── 鼠标 ─────────────
 
@@ -1217,12 +1332,15 @@ class CameraDebuggerGUI:
 
     def _toggle_fps(self):
         self.show_fps = self.fps_var.get()
+        self._save_settings()
 
     def _toggle_crosshair(self):
         self.show_crosshair = self.crosshair_var.get()
+        self._save_settings()
 
     def _toggle_mirror(self):
         self.mirror = self.mirror_var.get()
+        self._save_settings()
 
     def _apply_offset(self, frame: np.ndarray) -> np.ndarray:
         """水平/竖直平移画面，边缘用黑色填充"""
@@ -1238,6 +1356,7 @@ class CameraDebuggerGUI:
     def _on_offset_change(self, event=None):
         self.offset_x = int(self.offset_x_var.get())
         self.offset_y = int(self.offset_y_var.get())
+        self._save_settings()
 
     def _reset_offset(self):
         self.offset_x_var.set(0)
@@ -1248,6 +1367,7 @@ class CameraDebuggerGUI:
         self.running = False
         if self.recording and self.video_writer:
             self.video_writer.release()
+        self._save_settings()
         self.camera.release()
         self.root.destroy()
 
@@ -1264,8 +1384,14 @@ def main():
     parser.add_argument("--output", type=str, default=None, help="截图输出目录")
     args = parser.parse_args()
 
+    # 优先恢复上次保存的摄像头与分辨率
+    settings = Settings(os.path.join(_app_dir(), "settings.json"))
+    cam_id = settings.get("camera_id", args.camera)
+    width = settings.get("width", args.width)
+    height = settings.get("height", args.height)
+
     try:
-        camera = CameraManager(args.camera, args.width, args.height)
+        camera = CameraManager(cam_id, width, height)
     except RuntimeError as e:
         print(f"[ERROR] {e}")
         return

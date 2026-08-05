@@ -7,6 +7,7 @@ build/
 *.spec.user
 .vscode/
 snapshots/
+settings.json
 *.pt
 *.onnx
 *.log
