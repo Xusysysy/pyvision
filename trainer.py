@@ -169,9 +169,11 @@ def _train_process(log_q: multiprocessing.Queue, cfg: dict):
 
         best_pt = Path(results.save_dir) / "weights" / "best.pt"
         if best_pt.exists():
-            out_path = os.path.join(cfg["out_dir"], cfg["out_name"])
-            shutil.copy2(best_pt, out_path)
-            log_q.put(f"\n[TRAINER] 模型已保存: {out_path}\n")
+            base = cfg["out_name"]
+            out_pt = os.path.join(cfg["out_dir"], base + ".pt")
+            out_onnx = os.path.join(cfg["out_dir"], base + ".onnx")
+            shutil.copy2(best_pt, out_pt)
+            log_q.put(f"\n[TRAINER] 模型已保存: {out_pt}\n")
 
             # 导出 ONNX（同名 .onnx 输出到同一目录）
             try:
@@ -180,10 +182,9 @@ def _train_process(log_q: multiprocessing.Queue, cfg: dict):
                 export_model.export(format="onnx", imgsz=cfg["imgsz"],
                                     simplify=True, opset=12)
                 onnx_src = str(best_pt).replace(".pt", ".onnx")
-                onnx_out = os.path.splitext(out_path)[0] + ".onnx"
                 if os.path.isfile(onnx_src):
-                    shutil.copy2(onnx_src, onnx_out)
-                    log_q.put(f"[TRAINER] ONNX 已保存: {onnx_out}\n")
+                    shutil.copy2(onnx_src, out_onnx)
+                    log_q.put(f"[TRAINER] ONNX 已保存: {out_onnx}\n")
                 else:
                     log_q.put("[TRAINER] ONNX 导出未生成文件\n")
             except ImportError:
@@ -449,8 +450,8 @@ class TrainerGUI:
         self.base_var = tk.StringVar(value="yolo11n-cls.pt")
         ttk.Entry(left, textvariable=self.base_var, width=40).pack(fill=tk.X, pady=(2, 6))
 
-        ttk.Label(left, text="输出模型文件名 (同时导出 .pt 和 .onnx):", style="Dark.TLabel").pack(anchor=tk.W)
-        self.out_name_var = tk.StringVar(value="smart_glasses_cls.pt")
+        ttk.Label(left, text="输出模型文件名 (不含后缀，自动生成 .pt 和 .onnx):", style="Dark.TLabel").pack(anchor=tk.W)
+        self.out_name_var = tk.StringVar(value="smart_glasses_cls")
         ttk.Entry(left, textvariable=self.out_name_var, width=40).pack(fill=tk.X, pady=(2, 10))
 
         self.train_btn = tk.Button(
@@ -677,6 +678,15 @@ class TrainerGUI:
 
     # ───────────── 训练 ─────────────
 
+    def _base_model_name(self) -> str:
+        """返回不含后缀的模型基础名（自动剥离 .pt/.onnx）"""
+        name = self.out_name_var.get().strip() or "smart_glasses_cls"
+        for ext in (".pt", ".onnx"):
+            if name.lower().endswith(ext):
+                name = name[: -len(ext)]
+                break
+        return name
+
     def _start_training(self):
         if self.train_proc and self.train_proc.is_alive():
             return
@@ -699,7 +709,7 @@ class TrainerGUI:
                 "patience": max(0, int(self.param_vars["patience_var"].get())),
                 "run_name": "smart_glasses",
                 "out_dir": DATA_ROOT,
-                "out_name": self.out_name_var.get().strip() or "smart_glasses_cls.pt",
+                "out_name": self._base_model_name(),
             }
         except ValueError as e:
             messagebox.showerror("错误", f"参数错误: {e}")
