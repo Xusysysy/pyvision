@@ -24,7 +24,7 @@
 
 - **1. 采集数据**：摄像头预览（默认最大分辨率），三类一键保存（智能眼镜/普通眼镜/空桌面）
 - **2. 准备数据**：自动按比例划分训练集/验证集
-- **3. 训练模型**：参数可调（轮数/输入尺寸/批大小/设备），实时日志，输出 `.pt` 分类模型
+- **3. 训练模型**：参数可调（轮数/输入尺寸/批大小/设备），实时日志，同时输出 `.pt` 和 `.onnx` 分类模型
 
 ## 训练自定义模型
 
@@ -39,7 +39,7 @@ python trainer.py
    - 智能眼镜 = 带摄像头/电池/按钮；普通眼镜 = 仅镜框镜片；空桌面 = 无眼镜背景
    - 建议每类采集 100+ 张，覆盖不同角度/距离/光照
 2. **准备数据**：设置验证集比例（默认 0.2），点击"重新划分数据集"
-3. **训练模型**：点击"开始训练"，完成后输出 `smart_glasses_cls.pt` 到应用目录
+3. **训练模型**：点击"开始训练"，完成后输出 `smart_glasses_cls.pt` 和 `smart_glasses_cls.onnx` 到数据目录（打包版为 `~/pyvision_dataset`，源码运行为项目 `dataset/`）
 
 > 注意：训练需要联网下载基础模型 `yolo11n-cls.pt`（也可手动放入应用目录）。
 
@@ -51,6 +51,7 @@ pip install opencv-python Pillow numpy
 # 训练 + CNN 推理
 pip install ultralytics          # YOLO 训练 + 推理
 pip install onnxruntime          # ONNX 推理（用于 smart_glasses.onnx 检测）
+pip install onnx                 # ONNX 导出（trainer 同时输出 .pt 和 .onnx）
 ```
 
 ## 用法

@@ -172,6 +172,25 @@ def _train_process(log_q: multiprocessing.Queue, cfg: dict):
             out_path = os.path.join(cfg["out_dir"], cfg["out_name"])
             shutil.copy2(best_pt, out_path)
             log_q.put(f"\n[TRAINER] 模型已保存: {out_path}\n")
+
+            # 导出 ONNX（同名 .onnx 输出到同一目录）
+            try:
+                log_q.put("[TRAINER] 导出 ONNX...\n")
+                export_model = YOLO(best_pt)
+                export_model.export(format="onnx", imgsz=cfg["imgsz"],
+                                    simplify=True, opset=12)
+                onnx_src = str(best_pt).replace(".pt", ".onnx")
+                onnx_out = os.path.splitext(out_path)[0] + ".onnx"
+                if os.path.isfile(onnx_src):
+                    shutil.copy2(onnx_src, onnx_out)
+                    log_q.put(f"[TRAINER] ONNX 已保存: {onnx_out}\n")
+                else:
+                    log_q.put("[TRAINER] ONNX 导出未生成文件\n")
+            except ImportError:
+                log_q.put("[TRAINER] ONNX 导出失败: 未安装 onnx 包，"
+                          "请运行 pip install onnx onnxruntime 后重试\n")
+            except Exception as e:
+                log_q.put(f"[TRAINER] ONNX 导出失败: {e}\n")
         else:
             log_q.put("\n[TRAINER] 未找到 best.pt\n")
     except Exception as e:
@@ -430,7 +449,7 @@ class TrainerGUI:
         self.base_var = tk.StringVar(value="yolo11n-cls.pt")
         ttk.Entry(left, textvariable=self.base_var, width=40).pack(fill=tk.X, pady=(2, 6))
 
-        ttk.Label(left, text="输出模型文件名 (.pt):", style="Dark.TLabel").pack(anchor=tk.W)
+        ttk.Label(left, text="输出模型文件名 (同时导出 .pt 和 .onnx):", style="Dark.TLabel").pack(anchor=tk.W)
         self.out_name_var = tk.StringVar(value="smart_glasses_cls.pt")
         ttk.Entry(left, textvariable=self.out_name_var, width=40).pack(fill=tk.X, pady=(2, 10))
 

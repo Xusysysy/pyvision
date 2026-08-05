@@ -17,6 +17,9 @@ from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 hiddenimports += collect_submodules('ultralytics')
 datas += collect_data_files('ultralytics', include_py_files=False)
 
+# ONNX 导出（ultralytics 动态导入）
+hiddenimports += collect_submodules('onnx')
+
 excludes = [
     'scipy',
     'pandas',
