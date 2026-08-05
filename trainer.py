@@ -447,7 +447,8 @@ class TrainerGUI:
 
     def _init_camera(self):
         try:
-            self.camera = CameraManager(0, 1280, 720)
+            # width/height=0 表示自动使用摄像头支持的最大分辨率
+            self.camera = CameraManager(0, 0, 0)
         except RuntimeError as e:
             self.camera = None
             self.status_var.set(f"无法打开摄像头: {e}")
@@ -525,8 +526,8 @@ class TrainerGUI:
         disp = frame.copy()
         h, w = disp.shape[:2]
         cv2.rectangle(disp, (0, 0), (w, 34), (30, 30, 30), -1)
-        cv2.putText(disp, f"类别: {CLASS_LABELS[self.class_index]}  |  智能:{self.counts[0]} "
-                          f"普通:{self.counts[1]} 空:{self.counts[2]}",
+        cv2.putText(disp, f"Class: {CLASSES[self.class_index]}  |  Smart:{self.counts[0]} "
+                          f"Reg:{self.counts[1]}  Neg:{self.counts[2]}",
                     (8, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1)
 
         cw = self.canvas.winfo_width()

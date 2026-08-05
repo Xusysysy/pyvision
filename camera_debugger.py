@@ -421,6 +421,21 @@ def enumerate_cameras(max_id: int = 10) -> list[dict]:
 # 3. 摄像头管理
 # ═══════════════════════════════════════════════
 
+# 从高到低探测的最大分辨率列表
+MAX_RESOLUTIONS = [
+    (7680, 4320),
+    (3840, 2160),
+    (2560, 1440),
+    (1920, 1080),
+    (1600, 1200),
+    (1366, 768),
+    (1280, 720),
+    (1024, 768),
+    (800, 600),
+    (640, 480),
+]
+
+
 class CameraManager:
     """管理摄像头并在后台线程中持续采集最新一帧，read() 快速返回缓存帧。
 
@@ -451,11 +466,26 @@ class CameraManager:
             self.cap = cv2.VideoCapture(self.camera_id)
         if not self.cap.isOpened():
             raise RuntimeError(f"无法打开摄像头 {self.camera_id}")
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.requested_width)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.requested_height)
+        if self.requested_width > 0 and self.requested_height > 0:
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.requested_width)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.requested_height)
+        else:
+            self._try_max_resolution()
         self.actual_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         self.actual_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         print(f"[Camera] 已打开摄像头 {self.camera_id}: {self.actual_width}x{self.actual_height}")
+
+    def _try_max_resolution(self):
+        """探测并设置摄像头支持的最大分辨率"""
+        self.requested_width, self.requested_height = 0, 0
+        for w, h in MAX_RESOLUTIONS:
+            self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
+            self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
+            aw = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            ah = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            if aw >= w and ah >= h:
+                self.requested_width, self.requested_height = aw, ah
+                return
 
     def _start_grab_thread(self):
         self._running = True
