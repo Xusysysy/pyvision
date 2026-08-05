@@ -188,6 +188,8 @@ class TrainerGUI:
         self._camera_list: list[dict] = []
         self.class_index = 0
         self.counts = [0, 0, 0]
+        self.offset_x = 0
+        self.offset_y = 0
 
         self.train_proc: multiprocessing.Process | None = None
         self.log_q: multiprocessing.Queue = multiprocessing.Queue()
@@ -315,6 +317,29 @@ class TrainerGUI:
             command=self._save_frame
         )
         self.save_btn.pack(fill=tk.X, pady=(8, 4))
+
+        ttk.Separator(ctrl, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=6)
+        ttk.Label(ctrl, text="画面偏移 (采集校准)", style="Section.TLabel").pack(anchor=tk.W, pady=(0, 4))
+
+        self.offset_x_var = tk.IntVar(value=0)
+        self.offset_y_var = tk.IntVar(value=0)
+
+        hrow = ttk.Frame(ctrl, style="Dark.TFrame")
+        hrow.pack(fill=tk.X, pady=(0, 2))
+        ttk.Label(hrow, text="水平:", style="Dark.TLabel").pack(side=tk.LEFT)
+        ttk.Scale(hrow, from_=-300, to=300, variable=self.offset_x_var,
+                  command=self._on_offset_change).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=4)
+        ttk.Entry(hrow, textvariable=self.offset_x_var, width=6).pack(side=tk.LEFT)
+
+        vrow = ttk.Frame(ctrl, style="Dark.TFrame")
+        vrow.pack(fill=tk.X, pady=(0, 2))
+        ttk.Label(vrow, text="竖直:", style="Dark.TLabel").pack(side=tk.LEFT)
+        ttk.Scale(vrow, from_=-300, to=300, variable=self.offset_y_var,
+                  command=self._on_offset_change).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=4)
+        ttk.Entry(vrow, textvariable=self.offset_y_var, width=6).pack(side=tk.LEFT)
+
+        ttk.Button(ctrl, text="清零偏移", width=8,
+                   command=self._reset_offset).pack(anchor=tk.W, pady=(2, 4))
 
         ttk.Separator(ctrl, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=6)
         ttk.Label(ctrl, text="采集统计", style="Section.TLabel").pack(anchor=tk.W, pady=(0, 4))
@@ -496,7 +521,10 @@ class TrainerGUI:
         ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         name = f"{cls}_{ts}.jpg"
         path = os.path.join(d, name)
-        ok = cv2.imwrite(path, self._current_frame)
+        frame_to_save = self._current_frame
+        if self.offset_x or self.offset_y:
+            frame_to_save = self._apply_offset(self._current_frame)
+        ok = cv2.imwrite(path, frame_to_save)
         if ok:
             self.counts[self.class_index] += 1
             self.status_var.set(f"已保存: {name}")
@@ -509,6 +537,28 @@ class TrainerGUI:
         self.stats_var.set(
             f"智能眼镜: {self.counts[0]} 张\n普通眼镜: {self.counts[1]} 张\n空桌面:   {self.counts[2]} 张"
         )
+
+    # ───────────── 画面偏移 ─────────────
+
+    def _on_offset_change(self, event=None):
+        self.offset_x = int(self.offset_x_var.get())
+        self.offset_y = int(self.offset_y_var.get())
+
+    def _reset_offset(self):
+        self.offset_x_var.set(0)
+        self.offset_y_var.set(0)
+        self._on_offset_change()
+
+    def _apply_offset(self, frame: np.ndarray) -> np.ndarray:
+        """水平/竖直平移画面，边缘用黑色填充"""
+        if self.offset_x == 0 and self.offset_y == 0:
+            return frame
+        h, w = frame.shape[:2]
+        m = np.float32([[1, 0, self.offset_x], [0, 1, self.offset_y]])
+        return cv2.warpAffine(frame, m, (w, h),
+                              flags=cv2.INTER_LINEAR,
+                              borderMode=cv2.BORDER_CONSTANT,
+                              borderValue=(0, 0, 0))
 
     # ───────────── 预览循环 ─────────────
 
@@ -523,6 +573,8 @@ class TrainerGUI:
         self.root.after(16, self._update_preview)
 
     def _show_frame(self, frame: np.ndarray):
+        if self.offset_x or self.offset_y:
+            frame = self._apply_offset(frame)
         disp = frame.copy()
         h, w = disp.shape[:2]
         cv2.rectangle(disp, (0, 0), (w, 34), (30, 30, 30), -1)

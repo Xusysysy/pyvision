@@ -979,10 +979,10 @@ class CameraDebuggerGUI:
         s = self.settings
 
         if s.get("output_dir"):
-            self.output_dir.set(s["output_dir"])
+            self.output_dir.set(s.get("output_dir"))
             os.makedirs(self.output_dir.get(), exist_ok=True)
         if s.get("photo_prefix"):
-            self.photo_prefix.set(s["photo_prefix"])
+            self.photo_prefix.set(s.get("photo_prefix"))
 
         self.show_fps = bool(s.get("show_fps", True))
         self.fps_var.set(self.show_fps)
