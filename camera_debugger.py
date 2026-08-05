@@ -557,6 +557,8 @@ class CameraDebuggerGUI:
         self.show_fps = True
         self.show_crosshair = False
         self.mirror = False
+        self.offset_x = 0
+        self.offset_y = 0
         self.recording = False
         self.video_writer = None
 
@@ -748,6 +750,34 @@ class CameraDebuggerGUI:
         ttk.Checkbutton(panel, text="水平镜像", variable=self.mirror_var,
                         style="Dark.TCheckbutton",
                         command=self._toggle_mirror).pack(anchor=tk.W)
+
+        # ══════ 偏移校准 ══════
+        ttk.Separator(panel, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=2)
+        ttk.Label(panel, text="偏移校准 (画面平移)", style="Section.TLabel").pack(anchor=tk.W, pady=(6, 4))
+
+        self.offset_x_var = tk.IntVar(value=0)
+        self.offset_y_var = tk.IntVar(value=0)
+
+        hrow = ttk.Frame(panel, style="Dark.TFrame")
+        hrow.pack(fill=tk.X, pady=(0, 2))
+        ttk.Label(hrow, text="水平:", style="Dark.TLabel").pack(side=tk.LEFT)
+        ttk.Scale(hrow, from_=-300, to=300, variable=self.offset_x_var,
+                  command=self._on_offset_change).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=4)
+        self.offset_x_entry = ttk.Entry(hrow, textvariable=self.offset_x_var, width=6)
+        self.offset_x_entry.pack(side=tk.LEFT)
+        self.offset_x_entry.bind("<Return>", self._on_offset_change)
+
+        vrow = ttk.Frame(panel, style="Dark.TFrame")
+        vrow.pack(fill=tk.X, pady=(0, 2))
+        ttk.Label(vrow, text="竖直:", style="Dark.TLabel").pack(side=tk.LEFT)
+        ttk.Scale(vrow, from_=-300, to=300, variable=self.offset_y_var,
+                  command=self._on_offset_change).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=4)
+        self.offset_y_entry = ttk.Entry(vrow, textvariable=self.offset_y_var, width=6)
+        self.offset_y_entry.pack(side=tk.LEFT)
+        self.offset_y_entry.bind("<Return>", self._on_offset_change)
+
+        ttk.Button(panel, text="清零偏移", width=8,
+                   command=self._reset_offset).pack(anchor=tk.W, pady=(2, 4))
 
         # ══════ 拍照设置 ══════
         ttk.Separator(panel, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=2)
@@ -1016,6 +1046,10 @@ class CameraDebuggerGUI:
             elif not self.processor._loading and self.processor._load_error:
                 self.status_var.set(f"处理管线: CNN 模型 (加载失败)")
 
+        # 应用水平/竖直偏移（画面平移，黑边填充）
+        if self.offset_x or self.offset_y:
+            processed = self._apply_offset(processed)
+
         self._processed_frame = processed.copy()
 
         display = processed.copy()
@@ -1025,12 +1059,14 @@ class CameraDebuggerGUI:
             cv2.putText(display, f"FPS: {self._current_fps:.1f}", (10, 25),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
-        # 十字准星
+        # 十字准星（固定在画面中心，用于检查/校准偏移）
         if self.show_crosshair:
             h, w = display.shape[:2]
             cx, cy = w // 2, h // 2
             cv2.line(display, (cx - 30, cy), (cx + 30, cy), (0, 255, 0), 1)
             cv2.line(display, (cx, cy - 30), (cx, cy + 30), (0, 255, 0), 1)
+            cv2.putText(display, f"OFFSET X:{self.offset_x} Y:{self.offset_y}",
+                        (cx - 75, cy + 22), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
 
         # 录制红点
         if self.recording:
@@ -1126,17 +1162,11 @@ class CameraDebuggerGUI:
         filename = f"{prefix}_{ts}.png"
         path = os.path.join(out_dir, filename)
 
-        # 如果处理器是直通，优先保存原始帧（更高清）；否则保存处理后的帧
-        if isinstance(self.processor, NoOpProcessor):
-            if self._current_frame is None:
-                self.status_var.set("没有可保存的帧")
-                return
-            frame_to_save = self._current_frame if not self.mirror else cv2.flip(self._current_frame, 1)
-        else:
-            if self._processed_frame is None:
-                self.status_var.set("没有可保存的帧")
-                return
-            frame_to_save = self._processed_frame
+        # 优先保存处理后的帧（已包含偏移平移），直通模式下与原始帧等价
+        if self._processed_frame is None:
+            self.status_var.set("没有可保存的帧")
+            return
+        frame_to_save = self._processed_frame
 
         ok = cv2.imwrite(path, frame_to_save)
         if ok:
@@ -1193,6 +1223,26 @@ class CameraDebuggerGUI:
 
     def _toggle_mirror(self):
         self.mirror = self.mirror_var.get()
+
+    def _apply_offset(self, frame: np.ndarray) -> np.ndarray:
+        """水平/竖直平移画面，边缘用黑色填充"""
+        if self.offset_x == 0 and self.offset_y == 0:
+            return frame
+        h, w = frame.shape[:2]
+        m = np.float32([[1, 0, self.offset_x], [0, 1, self.offset_y]])
+        return cv2.warpAffine(frame, m, (w, h),
+                              flags=cv2.INTER_LINEAR,
+                              borderMode=cv2.BORDER_CONSTANT,
+                              borderValue=(0, 0, 0))
+
+    def _on_offset_change(self, event=None):
+        self.offset_x = int(self.offset_x_var.get())
+        self.offset_y = int(self.offset_y_var.get())
+
+    def _reset_offset(self):
+        self.offset_x_var.set(0)
+        self.offset_y_var.set(0)
+        self._on_offset_change()
 
     def _on_close(self):
         self.running = False
