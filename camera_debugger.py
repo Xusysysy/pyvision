@@ -144,6 +144,7 @@ class CNNProcessor(FrameProcessor):
         self.conf_threshold = conf_threshold
         self.model = None
         self._model_type = None  # "yolo_ultralytics" | "onnx"
+        self._task = None        # "detect" | "classify" | "segment" | ...
         self._onnx_session = None
         self._onnx_input_name = None
         self._yolo_names = {}
@@ -191,8 +192,9 @@ class CNNProcessor(FrameProcessor):
         try:
             self.model = YOLO(model_path)
             self._model_type = "yolo_ultralytics"
+            self._task = getattr(self.model, "task", None)
             self._yolo_names = self.model.names if hasattr(self.model, "names") else {}
-            _log.info(f"已加载 YOLO 模型: {model_path}")
+            _log.info(f"已加载 YOLO 模型: {model_path} (task={self._task})")
         except Exception as e:
             _log.error(f"YOLO 模型加载失败: {e}")
             _log.error(traceback.format_exc())
@@ -345,8 +347,33 @@ class CNNProcessor(FrameProcessor):
             return frame
 
         try:
+            if self._task == "classify":
+                return self._process_classify(frame)
             results = self.detect(frame, gray, edges)
             return self._draw_results(frame, results)
+        except Exception as e:
+            cv2.putText(frame, f"CNN error: {e}", (10, 30),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+            return frame
+
+    def _process_classify(self, frame: np.ndarray) -> np.ndarray:
+        """分类模型推理：在预览左上角显示各分类概率"""
+        try:
+            preds = self.model(frame, verbose=False)
+            for pred in preds:
+                probs = pred.probs
+                if probs is None:
+                    continue
+                names = pred.names if hasattr(pred, "names") else self._yolo_names
+                y = 50
+                cv2.putText(frame, "Class:", (10, y - 15),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 255), 2)
+                for idx, conf in zip(probs.top5, probs.top5conf):
+                    label = names.get(int(idx), str(int(idx)))
+                    cv2.putText(frame, f"{label}: {float(conf):.3f}", (10, y),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                    y += 24
+            return frame
         except Exception as e:
             cv2.putText(frame, f"CNN error: {e}", (10, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
