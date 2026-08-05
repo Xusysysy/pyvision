@@ -150,6 +150,11 @@ class CNNProcessor(FrameProcessor):
         self._yolo_names = {}
         self._loading = False
         self._load_error = None
+        self.infer_every = 3          # 每 N 帧推理一次，降低 CPU 负载、稳定概率显示
+        self._infer_counter = 0
+        self._cached_probs = None     # 分类结果缓存 [(label, conf), ...]
+        self._cached_results = []     # 检测结果缓存
+        self._smooth_probs = None     # 分类概率 EMA 平滑缓存 {label: conf}
         if async_load:
             self._loading = True
             threading.Thread(target=self._load_model_thread, args=(self.model_path,), daemon=True).start()
@@ -346,38 +351,53 @@ class CNNProcessor(FrameProcessor):
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
             return frame
 
+        # 限制推理频率：每 infer_every 帧推理一次，中间帧复用缓存结果，
+        # 降低 CPU 负载并避免概率频繁跳动
+        self._infer_counter += 1
+        do_infer = (self._infer_counter % self.infer_every == 0)
         try:
             if self._task == "classify":
-                return self._process_classify(frame)
-            results = self.detect(frame, gray, edges)
-            return self._draw_results(frame, results)
+                if do_infer:
+                    self._cached_probs = self._classify(frame)
+                return self._draw_classify(frame, self._cached_probs)
+            if do_infer:
+                self._cached_results = self.detect(frame, gray, edges)
+            return self._draw_results(frame, self._cached_results)
         except Exception as e:
             cv2.putText(frame, f"CNN error: {e}", (10, 30),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
             return frame
 
-    def _process_classify(self, frame: np.ndarray) -> np.ndarray:
-        """分类模型推理：在预览左上角显示各分类概率"""
-        try:
-            preds = self.model(frame, verbose=False)
-            for pred in preds:
-                probs = pred.probs
-                if probs is None:
-                    continue
-                names = pred.names if hasattr(pred, "names") else self._yolo_names
-                y = 50
-                cv2.putText(frame, "Class:", (10, y - 15),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 255), 2)
-                for idx, conf in zip(probs.top5, probs.top5conf):
-                    label = names.get(int(idx), str(int(idx)))
-                    cv2.putText(frame, f"{label}: {float(conf):.3f}", (10, y),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-                    y += 24
-            return frame
-        except Exception as e:
-            cv2.putText(frame, f"CNN error: {e}", (10, 30),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-            return frame
+    def _classify(self, frame: np.ndarray) -> list | None:
+        """分类推理，返回 [(label, confidence), ...]，概率经 EMA 平滑防跳动"""
+        preds = self.model(frame, verbose=False)
+        for pred in preds:
+            probs = pred.probs
+            if probs is None:
+                continue
+            names = pred.names if hasattr(pred, "names") else self._yolo_names
+            items = [(names.get(int(idx), str(int(idx))), float(conf))
+                     for idx, conf in zip(probs.top5, probs.top5conf)]
+            if self._smooth_probs is None:
+                self._smooth_probs = {label: conf for label, conf in items}
+            else:
+                for label, conf in items:
+                    prev = self._smooth_probs.get(label)
+                    self._smooth_probs[label] = prev * 0.5 + conf * 0.5 if prev is not None else conf
+            return [(label, self._smooth_probs[label]) for label, _ in items]
+        return None
+
+    def _draw_classify(self, frame: np.ndarray, probs: list | None) -> np.ndarray:
+        """在预览左上角绘制分类概率"""
+        y = 50
+        cv2.putText(frame, "Class:", (10, y - 15),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 200, 255), 2)
+        if probs:
+            for label, conf in probs:
+                cv2.putText(frame, f"{label}: {conf:.3f}", (10, y),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                y += 24
+        return frame
 
 
 # ═══════════════════════════════════════════════
@@ -703,6 +723,7 @@ class CameraDebuggerGUI:
 
         # 显示缓存（用于避免重复缩放/重绘）
         self._canvas_item = None
+        self._tk_image = None
         self._disp_w = 0
         self._disp_h = 0
         self._canvas_w = 0
@@ -1259,7 +1280,8 @@ class CameraDebuggerGUI:
             self._frame_count = 0
             self._fps_time = now
 
-        self.root.after(16, self._update_frame)
+        # 约 30 FPS 刷新（匹配摄像头帧率），避免对相同缓存帧的冗余重绘
+        self.root.after(33, self._update_frame)
 
     def _display_frame(self, frame: np.ndarray):
         cw = self.canvas.winfo_width()
