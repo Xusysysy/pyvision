@@ -97,6 +97,15 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 
 **After any structural change (new/removed files, changed component responsibilities, navigation flow updates), sync the changes to `STRUCTURE.md`.**
 
+## 9. Concise Thinking & Output
+
+**Think as concisely as possible; skip filler output. Save completeness, not verbosity.**
+
+- 尽量精简地思考与推理，只保留必要的推理链。
+- 省略无效输出：不重复用户已说的内容、不罗列显而易见的过程、不写无信息量的寒暄。
+- 精简的前提是逻辑严谨：省略的是表达，不是推导与验证。
+- 能一句话说明的就不要两句话。
+
 ---
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.
