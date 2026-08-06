@@ -16,6 +16,7 @@
 """
 
 import os
+import re
 import sys
 import json
 import queue
@@ -204,8 +205,29 @@ def _ensure_raw_dirs(ds_dir: str):
 # 训练子进程
 # ═══════════════════════════════════════════════
 
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
+_NOISE_PREFIXES = ("Ultralytics ", "Predict: ", "Validate: ", "Visualize: ",
+                    "Results saved to ", "requirements:")
+_NOISE_SUBSTRINGS = ("summary (fused)", "Failed to inspect Python interpreter",
+                     "Caused by: Querying Python", "WARNING Retry", "uv pip install")
+
+
+def _is_noise_line(line: str) -> bool:
+    """过滤 ultralytics 横幅/AutoUpdate 等对用户无价值的日志行"""
+    s = line.strip()
+    if not s:
+        return False
+    if s.startswith(_NOISE_PREFIXES):
+        return True
+    return any(t in s for t in _NOISE_SUBSTRINGS)
+
+
 def _train_process(log_q: multiprocessing.Queue, cfg: dict):
     """在独立进程中执行 YOLO 分类训练，日志写入队列"""
+    # 打包环境下 sys.executable 是 trainer.exe，ultralytics AutoUpdate 会用 uv
+    # 把 exe 当作 Python 解释器启动探测，导致训练结束时弹出新的 trainer 窗口；禁用自动安装
+    os.environ["YOLO_AUTOINSTALL"] = "0"
+
     class _Stream:
         def __init__(self, q):
             self.q = q
@@ -1160,6 +1182,9 @@ class TrainerGUI:
             pass
 
     def _append_log(self, chunk: str):
+        chunk = _ANSI_RE.sub("", chunk)
+        if not chunk:
+            return
         self.log_text.config(state="normal")
         # 处理 tqdm 的 \r 进度：覆盖最后一行
         parts = chunk.split("\r")
@@ -1168,14 +1193,17 @@ class TrainerGUI:
                 continue
             if i < len(parts) - 1 or chunk.endswith("\r"):
                 if "\n" in part:
-                    lines = part.split("\n")
-                    for ln in lines:
-                        if ln:
+                    for ln in part.split("\n"):
+                        if ln and not _is_noise_line(ln):
                             self._replace_last_line(ln)
                 else:
-                    self._replace_last_line(part)
+                    if not _is_noise_line(part):
+                        self._replace_last_line(part)
             else:
-                self.log_text.insert(tk.END, part)
+                kept = [ln for ln in part.split("\n") if not _is_noise_line(ln)]
+                if kept:
+                    self.log_text.insert(tk.END, "\n".join(kept) +
+                                         ("\n" if part.endswith("\n") else ""))
         self.log_text.see(tk.END)
         self.log_text.config(state="disabled")
 
