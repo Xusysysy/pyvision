@@ -947,8 +947,16 @@ class TrainerGUI:
         frame_to_save = self._current_frame
         if self.offset_x or self.offset_y:
             frame_to_save = self._apply_offset(self._current_frame)
-        ok = cv2.imwrite(path, frame_to_save)
+        # cv2.imwrite 在 Windows 上不支持中文路径（如中文数据集名），
+        # 静默失败导致计数不增长；改用 imencode + 原生写入以支持 Unicode 路径
+        ok, buf = cv2.imencode(".jpg", frame_to_save)
         if ok:
+            try:
+                with open(path, "wb") as f:
+                    f.write(buf.tobytes())
+            except OSError as e:
+                self.status_var.set(f"保存失败: {path} ({e})")
+                return
             self.counts[self.class_index] += 1
             self.status_var.set(f"已保存: {name}")
             self._update_stats()

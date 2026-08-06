@@ -1369,8 +1369,16 @@ class CameraDebuggerGUI:
             return
         frame_to_save = self._processed_frame
 
-        ok = cv2.imwrite(path, frame_to_save)
+        # cv2.imwrite 在 Windows 上不支持中文路径（如中文输出目录），
+        # 静默失败；改用 imencode + 原生写入以支持 Unicode 路径
+        ok, buf = cv2.imencode(".png", frame_to_save)
         if ok:
+            try:
+                with open(path, "wb") as f:
+                    f.write(buf.tobytes())
+            except OSError as e:
+                self.status_var.set(f"保存失败: {path} ({e})")
+                return
             self._photo_count += 1
             self.count_label.config(text=f"已拍: {self._photo_count} 张")
             self.status_var.set(f"已保存: {filename}")
