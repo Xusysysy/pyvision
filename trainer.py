@@ -1,8 +1,10 @@
 """
 智能眼镜训练工作台 — trainer.py
 
-整合数据采集 + 数据集准备 + 模型训练 (YOLO11 图像分类，零标注)。
+整合数据集管理 + 分类标签编辑 + 数据采集 + 数据集准备 + 模型训练 (YOLO11 图像分类，零标注)。
 单一 GUI 应用，全流程：
+  0. 管理数据集 (新建/重命名/删除/切换，每个数据集独立生成不同模型)
+     编辑分类标签 (增删改数量与名称，同步模型类名/目录)
   1. 采集数据  (摄像头预览，按类别保存图片)
   2. 准备数据  (自动划分 train/val)
   3. 训练模型  (YOLO11-cls，输出 .pt 分类模型)
@@ -15,6 +17,7 @@
 
 import os
 import sys
+import json
 import queue
 import shutil
 import random
@@ -27,7 +30,7 @@ import numpy as np
 
 try:
     import tkinter as tk
-    from tkinter import ttk, messagebox, filedialog
+    from tkinter import ttk, messagebox, filedialog, simpledialog
 except ImportError:
     raise SystemExit("需要 tkinter (Linux 下: sudo apt install python3-tk)")
 
@@ -73,8 +76,83 @@ def _data_dir() -> str:
 APP_DIR = _app_dir()
 DATA_ROOT = _data_dir()
 
-CLASSES = ["smart_glasses", "regular_glasses", "negative"]
-CLASS_LABELS = ["智能眼镜", "普通眼镜", "空桌面"]
+# 每个数据集独立目录: <DATA_ROOT>/datasets/<名称>/{raw,train,val}
+DATASETS_DIR = os.path.join(DATA_ROOT, "datasets")
+
+
+def _dataset_dir(name: str) -> str:
+    return os.path.join(DATASETS_DIR, name)
+
+
+def _list_datasets() -> list[str]:
+    p = Path(DATASETS_DIR)
+    if not p.is_dir():
+        return []
+    return sorted(d.name for d in p.iterdir() if d.is_dir())
+
+
+def _migrate_legacy_dataset():
+    """首次运行: 把旧版顶层 raw/train/val 迁入 datasets/default，避免数据丢失"""
+    if os.path.isdir(DATASETS_DIR):
+        return
+    os.makedirs(DATASETS_DIR, exist_ok=True)
+    default_dir = _dataset_dir("default")
+    os.makedirs(default_dir, exist_ok=True)
+    for sub in ("raw", "train", "val"):
+        src = os.path.join(DATA_ROOT, sub)
+        if os.path.isdir(src):
+            shutil.move(src, os.path.join(default_dir, sub))
+
+
+DEFAULT_CLASSES = ["smart_glasses", "regular_glasses", "negative"]
+DEFAULT_CLASS_LABELS = ["智能眼镜", "普通眼镜", "空桌面"]
+CLASSES_FILE = os.path.join(DATA_ROOT, "classes.json")
+
+
+def _load_classes() -> tuple[list[str], list[str]]:
+    """从 classes.json 读取分类配置 (内部名称 + 显示名称)，不存在则用默认值"""
+    if os.path.isfile(CLASSES_FILE):
+        try:
+            with open(CLASSES_FILE, encoding="utf-8") as f:
+                d = json.load(f)
+            classes = [str(c) for c in d.get("classes", [])]
+            labels = [str(c) for c in d.get("labels", [])]
+            if classes and len(classes) == len(labels):
+                return classes, labels
+        except Exception:
+            pass
+    return list(DEFAULT_CLASSES), list(DEFAULT_CLASS_LABELS)
+
+
+CLASSES, CLASS_LABELS = _load_classes()
+
+
+def _save_classes(classes: list[str], labels: list[str]):
+    os.makedirs(DATA_ROOT, exist_ok=True)
+    with open(CLASSES_FILE, "w", encoding="utf-8") as f:
+        json.dump({"classes": classes, "labels": labels}, f,
+                  ensure_ascii=False, indent=2)
+
+
+def _rename_class_dir(old: str, new: str):
+    """把所有数据集下 raw/train/val 的类别目录重命名 (同步模型类名)"""
+    for ds in _list_datasets():
+        for split in ("raw", "train", "val"):
+            src = os.path.join(_dataset_dir(ds), split, old)
+            if os.path.isdir(src):
+                os.rename(src, os.path.join(_dataset_dir(ds), split, new))
+
+
+def _add_class_dir(cls: str):
+    for ds in _list_datasets():
+        for split in ("raw", "train", "val"):
+            os.makedirs(os.path.join(_dataset_dir(ds), split, cls), exist_ok=True)
+
+
+def _remove_class_dir(cls: str):
+    for ds in _list_datasets():
+        for split in ("raw", "train", "val"):
+            shutil.rmtree(os.path.join(_dataset_dir(ds), split, cls), ignore_errors=True)
 
 
 def _list_images(directory: str) -> list[str]:
@@ -91,9 +169,9 @@ def _count_by_class(root: str) -> list[int]:
     return [len(_list_images(os.path.join(root, c))) for c in CLASSES]
 
 
-def _prepare_dataset(val_ratio: float):
-    """从 dataset/raw 划分数据到 dataset/train|val（YOLO 分类目录格式）"""
-    raw_root = os.path.join(DATA_ROOT, "raw")
+def _prepare_dataset(ds_dir: str, val_ratio: float):
+    """从 <ds_dir>/raw 划分数据到 <ds_dir>/train|val（YOLO 分类目录格式）"""
+    raw_root = os.path.join(ds_dir, "raw")
     total_raw = sum(len(_list_images(os.path.join(raw_root, c))) for c in CLASSES)
     if total_raw == 0:
         raise RuntimeError("原始数据为空，请先在第 1 步采集数据")
@@ -101,7 +179,7 @@ def _prepare_dataset(val_ratio: float):
     random.seed(42)
     for cls in CLASSES:
         for split in ("train", "val"):
-            d = os.path.join(DATA_ROOT, split, cls)
+            d = os.path.join(ds_dir, split, cls)
             if os.path.isdir(d):
                 shutil.rmtree(d)
             os.makedirs(d, exist_ok=True)
@@ -114,12 +192,12 @@ def _prepare_dataset(val_ratio: float):
             n_val = min(max(1, n_val), len(imgs) - 1)
         for i, img in enumerate(imgs):
             split = "val" if i < n_val else "train"
-            shutil.copy2(img, os.path.join(DATA_ROOT, split, cls, os.path.basename(img)))
+            shutil.copy2(img, os.path.join(ds_dir, split, cls, os.path.basename(img)))
 
 
-def _ensure_raw_dirs():
+def _ensure_raw_dirs(ds_dir: str):
     for c in CLASSES:
-        os.makedirs(os.path.join(DATA_ROOT, "raw", c), exist_ok=True)
+        os.makedirs(os.path.join(ds_dir, "raw", c), exist_ok=True)
 
 
 # ═══════════════════════════════════════════════
@@ -214,23 +292,30 @@ class TrainerGUI:
         self._running = True
         self._camera_list: list[dict] = []
         self.class_index = 0
-        self.counts = [0, 0, 0]
+        self.counts = [0] * len(CLASSES)
         self.offset_x = 0
         self.offset_y = 0
 
         self.train_proc: multiprocessing.Process | None = None
         self.log_q: multiprocessing.Queue = multiprocessing.Queue()
+        self.dataset_name = "default"
 
         # 显示缓存
         self._disp_cache = (0, 0, 0, 0, 0, 0)
         self._tk_image = None
 
-        _ensure_raw_dirs()
+        _migrate_legacy_dataset()
+        _ensure_raw_dirs(self.dataset_dir)
         self._setup_ui()
+        self._refresh_datasets()
         self._init_camera()
         self._scan_cameras()
-        self._update_stats()
         self._update_preview()
+
+    @property
+    def dataset_dir(self) -> str:
+        """当前数据集根目录 (含 raw/train/val)"""
+        return _dataset_dir(self.dataset_name)
 
     # ───────────── UI 构建 ─────────────
 
@@ -270,13 +355,16 @@ class TrainerGUI:
         nb = ttk.Notebook(main, style="Dark.TNotebook")
         nb.pack(fill=tk.BOTH, expand=True)
 
+        self.tab_dataset = ttk.Frame(nb, style="Dark.TFrame")
         self.tab_collect = ttk.Frame(nb, style="Dark.TFrame")
         self.tab_prepare = ttk.Frame(nb, style="Dark.TFrame")
         self.tab_train = ttk.Frame(nb, style="Dark.TFrame")
+        nb.add(self.tab_dataset, text=" 0. 数据集管理 ")
         nb.add(self.tab_collect, text=" 1. 采集数据 ")
         nb.add(self.tab_prepare, text=" 2. 准备数据 ")
         nb.add(self.tab_train, text=" 3. 训练模型 ")
 
+        self._build_dataset_tab()
         self._build_collect_tab()
         self._build_prepare_tab()
         self._build_train_tab()
@@ -284,17 +372,313 @@ class TrainerGUI:
         # 底部状态栏
         status_frame = ttk.Frame(main, style="Dark.TFrame")
         status_frame.pack(fill=tk.X, pady=(8, 0))
-        self.footer_var = tk.StringVar(value="快捷键: 1/2/3 选择类别 | Space 保存 | Q 退出")
+        self.footer_var = tk.StringVar(value="快捷键: 1-9 选择类别 | Space 保存 | Q 退出")
         ttk.Label(status_frame, textvariable=self.footer_var,
                   style="Dark.TLabel").pack(side=tk.LEFT)
 
         self.root.bind("<q>", lambda e: self._on_close())
         self.root.bind("<Q>", lambda e: self._on_close())
         self.root.bind("<space>", lambda e: self._save_frame())
-        self.root.bind("1", lambda e: self._select_class(0))
-        self.root.bind("2", lambda e: self._select_class(1))
-        self.root.bind("3", lambda e: self._select_class(2))
+        for i in range(1, 10):
+            self.root.bind(str(i), lambda e, idx=i - 1: self._select_class(idx))
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _build_dataset_tab(self):
+        tab = self.tab_dataset
+
+        box = ttk.Frame(tab, style="Dark.TFrame")
+        box.pack(fill=tk.BOTH, expand=True, padx=16, pady=16)
+
+        ttk.Label(box, text="数据集管理 (每个数据集独立采集/训练，生成不同模型)",
+                  style="Section.TLabel").pack(anchor=tk.W, pady=(0, 8))
+
+        ttk.Label(box, text="当前数据集:", style="Dark.TLabel").pack(anchor=tk.W)
+        row = ttk.Frame(box, style="Dark.TFrame")
+        row.pack(fill=tk.X, pady=(2, 8))
+        self.dataset_combo = ttk.Combobox(row, state="readonly", width=30)
+        self.dataset_combo.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.dataset_combo.bind("<<ComboboxSelected>>", self._on_dataset_switch)
+        ttk.Button(row, text="刷新", width=6,
+                   command=self._refresh_datasets).pack(side=tk.LEFT, padx=(4, 0))
+
+        btns = ttk.Frame(box, style="Dark.TFrame")
+        btns.pack(fill=tk.X, pady=(0, 8))
+        ttk.Button(btns, text="新建数据集", width=12,
+                   command=self._new_dataset).pack(side=tk.LEFT)
+        ttk.Button(btns, text="重命名", width=10,
+                   command=self._rename_dataset).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(btns, text="删除数据集", width=12,
+                   command=self._delete_dataset).pack(side=tk.LEFT, padx=(6, 0))
+
+        ttk.Separator(box, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=6)
+        ttk.Label(box, text="数据集统计", style="Section.TLabel").pack(anchor=tk.W, pady=(6, 4))
+        self.ds_stats_var = tk.StringVar(value="--")
+        ttk.Label(box, textvariable=self.ds_stats_var, style="Dark.TLabel",
+                  justify=tk.LEFT).pack(anchor=tk.W)
+
+        ttk.Separator(box, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=6)
+        ttk.Label(box, text="分类标签 (数量/名称)", style="Section.TLabel").pack(anchor=tk.W, pady=(6, 4))
+        self.class_summary_var = tk.StringVar(value="")
+        ttk.Label(box, textvariable=self.class_summary_var, style="Dark.TLabel",
+                  justify=tk.LEFT).pack(anchor=tk.W)
+        ttk.Button(box, text="编辑分类标签...", width=14,
+                   command=self._edit_labels).pack(anchor=tk.W, pady=(4, 0))
+        self._update_class_summary()
+
+        ttk.Label(box, text="\n数据集目录: " + DATASETS_DIR + "\n"
+                            "采集/准备/训练均作用于当前选择的数据集。\n"
+                            "训练产出的模型 (.pt/.onnx) 保存在对应数据集目录下。",
+                  style="Dark.TLabel", justify=tk.LEFT).pack(anchor=tk.W, pady=(12, 0))
+
+    # ───────────── 数据集管理 ─────────────
+
+    def _refresh_datasets(self, select: str | None = None):
+        names = _list_datasets()
+        if not names:
+            _ensure_raw_dirs(_dataset_dir("default"))
+            names = _list_datasets()
+        if select and select in names:
+            self.dataset_name = select
+        elif self.dataset_name not in names:
+            self.dataset_name = names[0]
+        self.dataset_combo["values"] = names
+        self.dataset_combo.current(names.index(self.dataset_name))
+        self._on_dataset_changed()
+
+    def _on_dataset_switch(self, event=None):
+        sel = self.dataset_combo.current()
+        names = _list_datasets()
+        if 0 <= sel < len(names) and names[sel] != self.dataset_name:
+            self.dataset_name = names[sel]
+            self._on_dataset_changed()
+
+    def _on_dataset_changed(self):
+        _ensure_raw_dirs(self.dataset_dir)
+        self._update_stats()
+        self._update_data_stats()
+        self._update_dataset_stats()
+        self.status_var.set(f"当前数据集: {self.dataset_name}")
+
+    def _validate_ds_name(self, name: str) -> str | None:
+        name = name.strip()
+        if not name:
+            messagebox.showwarning("提示", "名称不能为空")
+            return None
+        if any(c in name for c in '/\\:*?"<>|'):
+            messagebox.showerror("错误", "名称不能包含特殊字符 / \\ : * ? \" < > |")
+            return None
+        return name
+
+    def _new_dataset(self):
+        name = simpledialog.askstring("新建数据集", "数据集名称 (例如: 室内检测):",
+                                      parent=self.root)
+        if not name:
+            return
+        name = self._validate_ds_name(name)
+        if not name:
+            return
+        if name in _list_datasets():
+            messagebox.showerror("错误", f"数据集 \"{name}\" 已存在")
+            return
+        _ensure_raw_dirs(_dataset_dir(name))
+        self._refresh_datasets(select=name)
+        self.status_var.set(f"已创建数据集: {name}")
+
+    def _rename_dataset(self):
+        if not self.dataset_name:
+            return
+        name = simpledialog.askstring("重命名数据集",
+                                      f"将 \"{self.dataset_name}\" 重命名为:",
+                                      initialvalue=self.dataset_name, parent=self.root)
+        if not name:
+            return
+        name = self._validate_ds_name(name)
+        if not name:
+            return
+        if name == self.dataset_name:
+            return
+        if name in _list_datasets():
+            messagebox.showerror("错误", f"数据集 \"{name}\" 已存在")
+            return
+        os.rename(_dataset_dir(self.dataset_name), _dataset_dir(name))
+        self._refresh_datasets(select=name)
+        self.status_var.set(f"已重命名为: {name}")
+
+    def _delete_dataset(self):
+        name = self.dataset_name
+        if not name:
+            return
+        n = sum(len(_list_images(os.path.join(self.dataset_dir, "raw", c))) for c in CLASSES)
+        if not messagebox.askyesno("删除数据集",
+                                   f"确定删除数据集 \"{name}\"？\n"
+                                   f"将删除其全部数据 ({n} 张图片) 及训练模型，不可恢复。",
+                                   parent=self.root):
+            return
+        shutil.rmtree(self.dataset_dir, ignore_errors=True)
+        self._refresh_datasets()
+        self.status_var.set(f"已删除数据集: {name}")
+
+    def _update_dataset_stats(self):
+        raw = _count_by_class(os.path.join(self.dataset_dir, "raw"))
+        tr = _count_by_class(os.path.join(self.dataset_dir, "train"))
+        va = _count_by_class(os.path.join(self.dataset_dir, "val"))
+        self.ds_stats_var.set(
+            f"数据集: {self.dataset_name}  ({self.dataset_dir})\n"
+            f"原始: " + ", ".join(f"{CLASS_LABELS[i]} {raw[i]}" for i in range(len(CLASSES))) + "\n"
+            f"训练: {sum(tr)} 张 | 验证: {sum(va)} 张"
+        )
+
+    # ───────────── 分类标签编辑 ─────────────
+
+    def _update_class_summary(self):
+        self.class_summary_var.set(
+            f"共 {len(CLASSES)} 类\n" +
+            "\n".join(f"{i + 1}. {CLASS_LABELS[i]} ({CLASSES[i]})" for i in range(len(CLASSES)))
+        )
+
+    def _validate_class_key(self, key: str, exclude: int = -1) -> str | None:
+        key = key.strip()
+        if not key:
+            messagebox.showwarning("提示", "内部名称不能为空")
+            return None
+        if any(c in key for c in '/\\:*?"<>|'):
+            messagebox.showerror("错误", "内部名称不能包含特殊字符 / \\ : * ? \" < > |")
+            return None
+        for i, k in enumerate(CLASSES):
+            if i != exclude and k == key:
+                messagebox.showerror("错误", f"内部名称 \"{key}\" 已存在")
+                return None
+        return key
+
+    def _edit_labels(self):
+        dlg = tk.Toplevel(self.root)
+        dlg.title("编辑分类标签")
+        dlg.configure(bg="#1a1a2e")
+        dlg.geometry("520x420")
+        dlg.transient(self.root)
+        dlg.grab_set()
+
+        frame = ttk.Frame(dlg, style="Dark.TFrame")
+        frame.pack(fill=tk.BOTH, expand=True, padx=12, pady=12)
+
+        ttk.Label(frame, text="分类标签 (内部名称 = 目录/模型类名; 显示名称 = 界面文字)",
+                  style="Section.TLabel").pack(anchor=tk.W, pady=(0, 6))
+
+        tree = ttk.Treeview(frame, columns=("label", "key"), show="headings", height=12)
+        tree.heading("label", text="显示名称")
+        tree.heading("key", text="内部名称 (目录/模型)")
+        tree.column("label", width=200, anchor=tk.W)
+        tree.column("key", width=250, anchor=tk.W)
+        tree.pack(fill=tk.BOTH, expand=True)
+        self._label_tree = tree
+
+        def reload_tree():
+            tree.delete(*tree.get_children())
+            for i, (key, label) in enumerate(zip(CLASSES, CLASS_LABELS)):
+                tree.insert("", tk.END, iid=str(i), values=(label, key))
+
+        reload_tree()
+
+        btnrow = ttk.Frame(frame, style="Dark.TFrame")
+        btnrow.pack(fill=tk.X, pady=(8, 0))
+        ttk.Button(btnrow, text="添加", width=8,
+                   command=lambda: self._add_label(reload_tree)).pack(side=tk.LEFT)
+        ttk.Button(btnrow, text="重命名显示名", width=12,
+                   command=lambda: self._rename_label(reload_tree)).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(btnrow, text="重命名内部名", width=12,
+                   command=lambda: self._rename_class_key(reload_tree)).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(btnrow, text="删除", width=8,
+                   command=lambda: self._remove_label(reload_tree)).pack(side=tk.LEFT, padx=(6, 0))
+        ttk.Button(btnrow, text="完成", width=8,
+                   command=dlg.destroy).pack(side=tk.RIGHT)
+
+    def _label_selection(self) -> int:
+        sel = self._label_tree.selection()
+        return int(sel[0]) if sel else -1
+
+    def _apply_class_change(self, reload_tree):
+        """标签变化后统一刷新界面并持久化"""
+        _save_classes(CLASSES, CLASS_LABELS)
+        self._rebuild_class_buttons()
+        self._update_class_summary()
+        self._update_stats()
+        self._update_data_stats()
+        self._update_dataset_stats()
+        reload_tree()
+        self.status_var.set(f"分类标签已更新: 共 {len(CLASSES)} 类")
+
+    def _add_label(self, reload_tree):
+        key = simpledialog.askstring("添加分类", "内部名称 (目录/模型类名，如 peanut):",
+                                     parent=self.root)
+        if not key:
+            return
+        key = self._validate_class_key(key)
+        if not key:
+            return
+        label = simpledialog.askstring("添加分类", "显示名称 (界面文字，可中文):",
+                                       parent=self.root) or ""
+        label = label.strip() or key
+        globals()["CLASSES"] = CLASSES + [key]
+        globals()["CLASS_LABELS"] = CLASS_LABELS + [label]
+        _add_class_dir(key)
+        self._apply_class_change(reload_tree)
+
+    def _rename_label(self, reload_tree):
+        idx = self._label_selection()
+        if idx < 0:
+            messagebox.showwarning("提示", "请先选择一个分类")
+            return
+        label = simpledialog.askstring("重命名显示名",
+                                       f"\"{CLASSES[idx]}\" 的新显示名称:",
+                                       initialvalue=CLASS_LABELS[idx], parent=self.root)
+        if not label:
+            return
+        label = label.strip() or CLASS_LABELS[idx]
+        new_labels = list(CLASS_LABELS)
+        new_labels[idx] = label
+        globals()["CLASS_LABELS"] = new_labels
+        self._apply_class_change(reload_tree)
+
+    def _rename_class_key(self, reload_tree):
+        idx = self._label_selection()
+        if idx < 0:
+            messagebox.showwarning("提示", "请先选择一个分类")
+            return
+        key = simpledialog.askstring("重命名内部名",
+                                     f"\"{CLASS_LABELS[idx]}\" 的新内部名称 (目录/模型类名):",
+                                     initialvalue=CLASSES[idx], parent=self.root)
+        if not key:
+            return
+        key = self._validate_class_key(key, exclude=idx)
+        if not key:
+            return
+        if key == CLASSES[idx]:
+            return
+        _rename_class_dir(CLASSES[idx], key)
+        new_classes = list(CLASSES)
+        new_classes[idx] = key
+        globals()["CLASSES"] = new_classes
+        self._apply_class_change(reload_tree)
+
+    def _remove_label(self, reload_tree):
+        idx = self._label_selection()
+        if idx < 0:
+            messagebox.showwarning("提示", "请先选择一个分类")
+            return
+        if len(CLASSES) <= 1:
+            messagebox.showerror("错误", "至少保留一个分类")
+            return
+        n = sum(len(_list_images(os.path.join(_dataset_dir(ds), "raw", CLASSES[idx])))
+                for ds in _list_datasets())
+        if not messagebox.askyesno("删除分类",
+                                   f"确定删除分类 \"{CLASS_LABELS[idx]}\"？\n"
+                                   f"将删除其所有数据 ({n} 张图片) 及各数据集中的目录，不可恢复。",
+                                   parent=self.root):
+            return
+        _remove_class_dir(CLASSES[idx])
+        globals()["CLASSES"] = [k for i, k in enumerate(CLASSES) if i != idx]
+        globals()["CLASS_LABELS"] = [l for i, l in enumerate(CLASS_LABELS) if i != idx]
+        self._apply_class_change(reload_tree)
 
     def _build_collect_tab(self):
         tab = self.tab_collect
@@ -325,17 +709,11 @@ class TrainerGUI:
                    command=self._scan_cameras).pack(side=tk.LEFT, padx=(4, 0))
 
         ttk.Separator(ctrl, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=6)
-        ttk.Label(ctrl, text="选择类别", style="Section.TLabel").pack(anchor=tk.W, pady=(0, 4))
+        ttk.Label(ctrl, text="选择类别 (按键 1-9)", style="Section.TLabel").pack(anchor=tk.W, pady=(0, 4))
 
-        self.class_buttons = []
-        for i, label in enumerate(CLASS_LABELS):
-            btn = tk.Button(ctrl, text=f"{label} ({i + 1})", font=("Consolas", 11, "bold"),
-                            relief="flat", cursor="hand2", height=1,
-                            command=lambda idx=i: self._select_class(idx))
-            btn.pack(fill=tk.X, pady=2)
-            self.class_buttons.append(btn)
-
-        self._select_class(0)
+        self.class_btns_frame = ttk.Frame(ctrl, style="Dark.TFrame")
+        self.class_btns_frame.pack(fill=tk.X)
+        self._rebuild_class_buttons()
 
         self.save_btn = tk.Button(
             ctrl, text="保存当前帧 (Space)", font=("Consolas", 12, "bold"),
@@ -375,7 +753,8 @@ class TrainerGUI:
         ttk.Label(ctrl, textvariable=self.stats_var, style="Dark.TLabel",
                   justify=tk.LEFT).pack(anchor=tk.W)
 
-        ttk.Label(ctrl, text="\n提示: 智能眼镜 = 带摄像头/电池\n普通眼镜 = 仅镜框镜片\n空桌面 = 无眼镜背景",
+        ttk.Label(ctrl, text="\n提示: 按键 1-9 或点击按钮选择类别\n"
+                             "每个类别对应数据集中的一个目录，\n类别可在第 0 步「分类标签」中增删改。",
                   style="Dark.TLabel", justify=tk.LEFT).pack(anchor=tk.W, pady=(8, 0))
 
     def _build_prepare_tab(self):
@@ -387,12 +766,12 @@ class TrainerGUI:
         ttk.Label(box, text="数据集准备 (自动划分训练/验证集)",
                   style="Section.TLabel").pack(anchor=tk.W, pady=(0, 8))
 
-        ttk.Label(box, text="原始数据目录:", style="Dark.TLabel").pack(anchor=tk.W)
-        self.data_root_label = ttk.Label(box, text=DATA_ROOT, style="Dark.TLabel",
+        ttk.Label(box, text="当前数据集目录:", style="Dark.TLabel").pack(anchor=tk.W)
+        self.data_root_label = ttk.Label(box, text=self.dataset_dir, style="Dark.TLabel",
                                          foreground="#5a9bd5")
         self.data_root_label.pack(anchor=tk.W, pady=(0, 8))
 
-        ttk.Label(box, text="原始数据统计 (dataset/raw):", style="Dark.TLabel").pack(anchor=tk.W)
+        ttk.Label(box, text="原始数据统计 (当前数据集/raw):", style="Dark.TLabel").pack(anchor=tk.W)
         self.raw_stats_var = tk.StringVar(value="--")
         ttk.Label(box, textvariable=self.raw_stats_var, style="Dark.TLabel").pack(anchor=tk.W, pady=(0, 8))
 
@@ -414,7 +793,7 @@ class TrainerGUI:
                   justify=tk.LEFT).pack(anchor=tk.W)
 
         ttk.Label(box, text="\n说明: 按类别目录直接作为训练样本，无需标注边界框。\n"
-                            "划分会把 dataset/raw 下的图片按比例复制到 dataset/train 和 dataset/val。",
+                            "划分会把当前数据集 raw 下的图片按比例复制到 train 和 val。",
                   style="Dark.TLabel", justify=tk.LEFT).pack(anchor=tk.W, pady=(12, 0))
 
     def _build_train_tab(self):
@@ -530,20 +909,37 @@ class TrainerGUI:
     # ───────────── 采集 ─────────────
 
     def _select_class(self, idx: int):
+        if idx < 0 or idx >= len(CLASSES):
+            return
         self.class_index = idx
-        colors = ["#00d4aa", "#f39c12", "#9b59b6"]
+        colors = ["#00d4aa", "#f39c12", "#9b59b6", "#e74c3c", "#3498db"]
         for i, btn in enumerate(self.class_buttons):
             if i == idx:
-                btn.config(bg=colors[idx], fg="#1a1a2e")
+                btn.config(bg=colors[idx % len(colors)], fg="#1a1a2e")
             else:
                 btn.config(bg="#16213e", fg="#e0e0e0")
+
+    def _rebuild_class_buttons(self):
+        for w in self.class_btns_frame.winfo_children():
+            w.destroy()
+        self.class_buttons = []
+        for i, label in enumerate(CLASS_LABELS):
+            btn = tk.Button(self.class_btns_frame, text=f"{label} ({i + 1})",
+                            font=("Consolas", 11, "bold"),
+                            relief="flat", cursor="hand2", height=1,
+                            command=lambda idx=i: self._select_class(idx))
+            btn.pack(fill=tk.X, pady=2)
+            self.class_buttons.append(btn)
+        if self.class_index >= len(CLASSES):
+            self.class_index = 0
+        self._select_class(self.class_index)
 
     def _save_frame(self):
         if self._current_frame is None:
             self.status_var.set("没有可保存的帧")
             return
         cls = CLASSES[self.class_index]
-        d = os.path.join(DATA_ROOT, "raw", cls)
+        d = os.path.join(self.dataset_dir, "raw", cls)
         os.makedirs(d, exist_ok=True)
         ts = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         name = f"{cls}_{ts}.jpg"
@@ -560,10 +956,9 @@ class TrainerGUI:
             self.status_var.set(f"保存失败: {path}")
 
     def _update_stats(self):
-        self.counts = _count_by_class(os.path.join(DATA_ROOT, "raw"))
-        self.stats_var.set(
-            f"智能眼镜: {self.counts[0]} 张\n普通眼镜: {self.counts[1]} 张\n空桌面:   {self.counts[2]} 张"
-        )
+        self.counts = _count_by_class(os.path.join(self.dataset_dir, "raw"))
+        lines = [f"{CLASS_LABELS[i]}: {self.counts[i]} 张" for i in range(len(CLASSES))]
+        self.stats_var.set("\n".join(lines))
 
     # ───────────── 画面偏移 ─────────────
 
@@ -605,9 +1000,9 @@ class TrainerGUI:
         disp = frame.copy()
         h, w = disp.shape[:2]
         cv2.rectangle(disp, (0, 0), (w, 34), (30, 30, 30), -1)
-        cv2.putText(disp, f"Class: {CLASSES[self.class_index]}  |  Smart:{self.counts[0]} "
-                          f"Reg:{self.counts[1]}  Neg:{self.counts[2]}",
-                    (8, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1)
+        cls_info = " ".join(f"{CLASS_LABELS[i]}:{self.counts[i]}" for i in range(len(CLASSES)))
+        cv2.putText(disp, f"DS: {self.dataset_name} | Class: {CLASSES[self.class_index]} | {cls_info}",
+                    (8, 24), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 255, 0), 1)
 
         cw = self.canvas.winfo_width()
         ch = self.canvas.winfo_height()
@@ -640,7 +1035,7 @@ class TrainerGUI:
             messagebox.showerror("错误", "验证集比例必须在 0-1 之间")
             return
 
-        raw_root = os.path.join(DATA_ROOT, "raw")
+        raw_root = os.path.join(self.dataset_dir, "raw")
         total_raw = sum(len(_list_images(os.path.join(raw_root, c))) for c in CLASSES)
         if total_raw == 0:
             messagebox.showerror("错误", "原始数据为空，请先在第 1 步采集数据")
@@ -650,7 +1045,7 @@ class TrainerGUI:
         self.root.update_idletasks()
 
         try:
-            _prepare_dataset(val_ratio)
+            _prepare_dataset(self.dataset_dir, val_ratio)
         except RuntimeError as e:
             messagebox.showerror("错误", str(e))
             return
@@ -660,20 +1055,19 @@ class TrainerGUI:
         messagebox.showinfo("完成", "数据集划分完成，可在第 3 步开始训练")
 
     def _update_data_stats(self):
-        raw_counts = _count_by_class(os.path.join(DATA_ROOT, "raw"))
+        raw_counts = _count_by_class(os.path.join(self.dataset_dir, "raw"))
         self.raw_stats_var.set(
-            f"智能: {raw_counts[0]} 张 | 普通: {raw_counts[1]} 张 | 空桌面: {raw_counts[2]} 张"
+            " | ".join(f"{CLASS_LABELS[i]}: {raw_counts[i]} 张" for i in range(len(CLASSES)))
         )
-        train_counts = _count_by_class(os.path.join(DATA_ROOT, "train"))
-        val_counts = _count_by_class(os.path.join(DATA_ROOT, "val"))
-        self.prepared_stats_var.set(
-            f"训练集: 智能 {train_counts[0]} / 普通 {train_counts[1]} / 空桌面 {train_counts[2]}\n"
-            f"验证集: 智能 {val_counts[0]} / 普通 {val_counts[1]} / 空桌面 {val_counts[2]}"
-        )
+        train_counts = _count_by_class(os.path.join(self.dataset_dir, "train"))
+        val_counts = _count_by_class(os.path.join(self.dataset_dir, "val"))
+        tr_line = " | ".join(f"{CLASS_LABELS[i]} {train_counts[i]}" for i in range(len(CLASSES)))
+        va_line = " | ".join(f"{CLASS_LABELS[i]} {val_counts[i]}" for i in range(len(CLASSES)))
+        self.prepared_stats_var.set(f"训练集: {tr_line}\n验证集: {va_line}")
+        pairs = " | ".join(f"{CLASS_LABELS[i]} {train_counts[i]}/{val_counts[i]}"
+                           for i in range(len(CLASSES)))
         self.train_stats_var.set(
-            f"训练集 {sum(train_counts)} 张 | 验证集 {sum(val_counts)} 张\n"
-            f"(智能 {train_counts[0]}/{val_counts[0]} | 普通 {train_counts[1]}/{val_counts[1]} "
-            f"| 空桌面 {train_counts[2]}/{val_counts[2]})"
+            f"训练集 {sum(train_counts)} 张 | 验证集 {sum(val_counts)} 张\n({pairs})"
         )
 
     # ───────────── 训练 ─────────────
@@ -691,7 +1085,7 @@ class TrainerGUI:
         if self.train_proc and self.train_proc.is_alive():
             return
 
-        train_root = os.path.join(DATA_ROOT, "train")
+        train_root = os.path.join(self.dataset_dir, "train")
         total = sum(len(_list_images(os.path.join(train_root, c))) for c in CLASSES)
         if total == 0:
             messagebox.showerror("错误", "训练集为空，请先采集数据并划分数据集")
@@ -699,7 +1093,7 @@ class TrainerGUI:
 
         try:
             cfg = {
-                "data_root": DATA_ROOT,
+                "data_root": self.dataset_dir,
                 "base_model": self.base_var.get().strip() or "yolo11n-cls.pt",
                 "epochs": max(1, int(self.param_vars["epochs_var"].get())),
                 "imgsz": max(32, int(self.param_vars["imgsz_var"].get())),
@@ -707,8 +1101,8 @@ class TrainerGUI:
                 "device": self.param_vars["device_var"].get().strip(),
                 "workers": max(0, int(self.param_vars["workers_var"].get())),
                 "patience": max(0, int(self.param_vars["patience_var"].get())),
-                "run_name": "smart_glasses",
-                "out_dir": DATA_ROOT,
+                "run_name": f"smart_glasses_{self.dataset_name}",
+                "out_dir": self.dataset_dir,
                 "out_name": self._base_model_name(),
             }
         except ValueError as e:
@@ -724,7 +1118,7 @@ class TrainerGUI:
         self.train_proc.start()
         self.train_btn.config(state="disabled")
         self.stop_btn.config(state="normal")
-        self.status_var.set("训练进行中...")
+        self.status_var.set(f"训练进行中 (数据集: {self.dataset_name})...")
         self._poll_log()
 
     def _stop_training(self):
@@ -744,7 +1138,7 @@ class TrainerGUI:
             self._drain_log()
             self.train_btn.config(state="normal")
             self.stop_btn.config(state="disabled")
-            self.status_var.set("训练已结束，模型位于应用目录")
+            self.status_var.set("训练已结束，模型位于数据集目录")
 
     def _drain_log(self):
         try:

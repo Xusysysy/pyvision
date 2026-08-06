@@ -16,11 +16,14 @@ pyvision/
 ├── CLAUDE.md                   # AI 编码规范
 ├── README.md                   # 项目说明
 ├── STRUCTURE.md                # 本文件
-├── dataset/                    # 训练数据集
-│   ├── data.yaml               # 数据集配置
-│   ├── raw/                    # 采集暂存区（smart_glasses/regular_glasses/negative）
-│   ├── train/                  # 训练集（分类目录格式）
-│   ├── val/                    # 验证集（分类目录格式）
+├── dataset/                    # 训练数据根目录（trainer 使用）
+│   ├── classes.json            # 分类标签配置（内部名称 + 显示名称，trainer 可编辑）
+│   ├── datasets/               # 多数据集管理（trainer 第 0 步）
+│   │   └── <数据集名>/          # 每个数据集独立目录（raw/train/val + 训练产物）
+│   │       ├── raw/            # 采集暂存区（smart_glasses/regular_glasses/negative）
+│   │       ├── train/          # 训练集（分类目录格式）
+│   │       └── val/            # 验证集（分类目录格式）
+│   ├── data.yaml               # 数据集配置（旧检测格式）
 │   ├── images/                 # 图片（旧检测格式，train/val）
 │   └── labels/                 # YOLO 标注（旧检测格式，train/val）
 ├── snapshots/                  # 截图保存目录
@@ -33,7 +36,7 @@ pyvision/
 | 模块 | 职责 |
 |------|------|
 | `camera_debugger.py` | 单文件主程序，包含图像处理处理器、GUI、录制、检测逻辑 |
-| `trainer.py` | 训练工作台 GUI：数据采集（带预览）+ 数据集划分 + YOLO11-cls 分类训练 |
+| `trainer.py` | 训练工作台 GUI：数据集管理（新建/重命名/删除/切换）+ 分类标签编辑（增删改数量与名称，同步模型类名）+ 数据采集（带预览）+ 数据集划分 + YOLO11-cls 分类训练 |
 | `collect_data.py` | USB 摄像头数据采集，按键分类保存正/负样本 |
 | `prepare_dataset.py` | 整理标注文件并划分训练/验证集 |
 | `train.py` | YOLO11n 单类检测训练 + ONNX 导出 |
