@@ -457,6 +457,7 @@ class TrainerGUI:
         self._update_stats()
         self._update_data_stats()
         self._update_dataset_stats()
+        self.data_root_label.config(text=self.dataset_dir)
         self.status_var.set(f"当前数据集: {self.dataset_name}")
 
     def _validate_ds_name(self, name: str) -> str | None:
@@ -960,6 +961,8 @@ class TrainerGUI:
             self.counts[self.class_index] += 1
             self.status_var.set(f"已保存: {name}")
             self._update_stats()
+            self._update_data_stats()
+            self._update_dataset_stats()
         else:
             self.status_var.set(f"保存失败: {path}")
 
