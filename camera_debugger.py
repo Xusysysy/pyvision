@@ -865,8 +865,12 @@ class CameraDebuggerGUI:
         proc_menu = ttk.Combobox(panel, textvariable=self.processor_var,
                                   values=list(self.PROCESSORS.keys()),
                                   state="readonly", width=24)
-        proc_menu.pack(fill=tk.X, pady=(0, 8))
+        proc_menu.pack(fill=tk.X, pady=(0, 4))
         proc_menu.bind("<<ComboboxSelected>>", self._on_processor_change)
+
+        self.model_btn = ttk.Button(panel, text="选择模型文件...", width=24,
+                                    command=self._choose_model, state="disabled")
+        self.model_btn.pack(fill=tk.X, pady=(0, 8))
 
         # ══════ 显示选项 ══════
         ttk.Separator(panel, orient=tk.HORIZONTAL).pack(fill=tk.X, pady=2)
@@ -1028,6 +1032,7 @@ class CameraDebuggerGUI:
         model_path = s.get("model_path")
         if proc in self.PROCESSORS:
             self.processor_var.set(proc)
+            self.model_btn.config(state="normal" if proc == "CNN 模型" else "disabled")
             if proc == "CNN 模型" and model_path:
                 CNNProcessor._last_selected_path = model_path
                 self.processor = CNNProcessor(model_path=model_path, async_load=True)
@@ -1163,6 +1168,7 @@ class CameraDebuggerGUI:
 
     def _on_processor_change(self, event=None):
         name = self.processor_var.get()
+        self.model_btn.config(state="normal" if name == "CNN 模型" else "disabled")
         cls = self.PROCESSORS.get(name, NoOpProcessor)
         try:
             if cls == CNNProcessor:
@@ -1189,6 +1195,7 @@ class CameraDebuggerGUI:
                 if not path:
                     _log.warning("用户未选择模型文件")
                     self.processor_var.set("直通 (原始)")
+                    self.model_btn.config(state="disabled")
                     self.processor = NoOpProcessor()
                     return
 
@@ -1203,6 +1210,24 @@ class CameraDebuggerGUI:
         except Exception as ex:
             messagebox.showerror("错误", f"加载处理器失败:\n{ex}")
             self.processor = NoOpProcessor()
+
+    def _choose_model(self):
+        """手动重新选择 CNN 模型文件"""
+        path = filedialog.askopenfilename(
+            title="选择模型文件",
+            filetypes=[
+                ("YOLO 模型", "*.pt *.yaml"),
+                ("ONNX 模型", "*.onnx"),
+                ("所有文件", "*.*"),
+            ],
+        )
+        if not path:
+            return
+        CNNProcessor._last_selected_path = path
+        self.processor_var.set("CNN 模型")
+        self.processor = CNNProcessor(model_path=path, async_load=True)
+        self.status_var.set("处理管线: CNN 模型 (加载中...)")
+        self._save_settings()
 
     # ───────────── 视频循环 ─────────────
 
