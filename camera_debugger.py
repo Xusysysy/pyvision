@@ -164,7 +164,9 @@ class CNNProcessor(FrameProcessor):
     def _load_model(self, model_path: str):
         _log.info(f"开始加载模型: {model_path}")
         if not os.path.isfile(model_path):
-            _log.error(f"模型文件不存在: {model_path}")
+            msg = f"模型文件不存在: {model_path}"
+            _log.error(msg)
+            self._load_error = msg
             return
 
         ext = os.path.splitext(model_path)[1].lower()
@@ -191,8 +193,9 @@ class CNNProcessor(FrameProcessor):
         try:
             from ultralytics import YOLO
         except ImportError:
-            _log.error("未安装 ultralytics，无法加载 .pt 模型。pip install ultralytics")
             _log.error(traceback.format_exc())
+            msg = "ultralytics 导入失败（可能是打包缺少依赖，如 torchvision）。pip install ultralytics torchvision"
+            self._load_error = msg
             return
         try:
             self.model = YOLO(model_path)
@@ -203,13 +206,16 @@ class CNNProcessor(FrameProcessor):
         except Exception as e:
             _log.error(f"YOLO 模型加载失败: {e}")
             _log.error(traceback.format_exc())
+            self._load_error = f"YOLO 模型加载失败: {e}"
 
     def _load_onnx(self, model_path: str):
         try:
             import onnxruntime as ort
         except ImportError:
-            _log.error("未安装 onnxruntime，无法加载模型。pip install onnxruntime")
+            msg = "未安装 onnxruntime，无法加载模型。pip install onnxruntime"
+            _log.error(msg)
             _log.error(traceback.format_exc())
+            self._load_error = msg
             return
         try:
             self._onnx_session = ort.InferenceSession(model_path)
@@ -220,6 +226,7 @@ class CNNProcessor(FrameProcessor):
         except Exception as e:
             _log.error(f"ONNX 模型加载失败: {e}")
             _log.error(traceback.format_exc())
+            self._load_error = f"ONNX 模型加载失败: {e}"
 
     # ──────── 图像转换接口 ────────
 
@@ -1256,10 +1263,12 @@ class CameraDebuggerGUI:
         if isinstance(self.processor, CNNProcessor):
             if self.processor._loading:
                 pass
-            elif not self.processor._loading and self.processor.model is not None and self.status_var.get().endswith("(加载中...)"):
-                self.status_var.set(f"处理管线: CNN 模型 (已加载)")
-            elif not self.processor._loading and self.processor._load_error:
+            elif self.processor._load_error:
                 self.status_var.set(f"处理管线: CNN 模型 (加载失败)")
+            elif self.processor.model is None:
+                self.status_var.set(f"处理管线: CNN 模型 (未加载)")
+            elif self.status_var.get().endswith("(加载中...)"):
+                self.status_var.set(f"处理管线: CNN 模型 (已加载)")
 
         # 应用水平/竖直偏移（画面平移，黑边填充）
         if self.offset_x or self.offset_y:

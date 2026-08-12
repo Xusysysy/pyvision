@@ -11,11 +11,17 @@ for model_file in ['smart_glasses.onnx', 'yolov8n.pt']:
 binaries = []
 hiddenimports = []
 
-from PyInstaller.utils.hooks import collect_submodules, collect_data_files
+from PyInstaller.utils.hooks import collect_submodules, collect_data_files, collect_all
 
 # 只收集 ultralytics 推理所需的子模块，而非 collect_all 全部
 hiddenimports += collect_submodules('ultralytics')
 datas += collect_data_files('ultralytics', include_py_files=False)
+
+# ultralytics 导入时会查询 torchvision 元数据，缺失会导致模型加载报错
+tv_datas, tv_binaries, tv_hiddenimports = collect_all('torchvision')
+datas += tv_datas
+binaries += tv_binaries
+hiddenimports += tv_hiddenimports
 
 # 不需要 certifi（代码里已禁用 SSL 验证）
 
